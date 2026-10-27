@@ -393,8 +393,8 @@ function Topbar({
   const title = location.pathname.includes("admin")
     ? "Administration"
     : location.pathname.includes("articles")
-    ? "Artikel"
-    : "Knowledge Hub";
+      ? "Artikel"
+      : "Knowledge Hub";
 
   return (
     <header className="topbar">
@@ -985,6 +985,11 @@ function AdminPage({ type }: { type: string }) {
     users: "Pengguna",
   };
 
+  const [articleList, setArticleList] = useState<Article[]>(() => [...articles]);
+  const [deletingArticle, setDeletingArticle] = useState<Article | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
   const [users, setUsers] = useState([
     { name: "Raka Putra", role: "Admin" as const },
     { name: "Nadia Aulia", role: "User" as const },
@@ -1005,6 +1010,98 @@ function AdminPage({ type }: { type: string }) {
       )
     );
     setPending(null);
+  };
+
+  const confirmDeleteArticle = async () => {
+    if (!deletingArticle) return;
+
+    setDeleteLoading(true);
+    setDeleteError(null);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+    try {
+      const rawBase =
+        process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+      const apiBase = rawBase
+        .replace("localhost", "127.0.0.1")
+        .replace(/\/$/, "");
+
+      const token =
+        localStorage.getItem("wikiflow-token") ||
+        localStorage.getItem("token") ||
+        localStorage.getItem("access_token");
+
+      if (!token) {
+        throw new Error(
+          "Sesi autentikasi tidak ditemukan. Token akses Sanctum belum tersedia. Silakan keluar dan login kembali sebagai Admin."
+        );
+      }
+
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+      };
+
+      const response = await fetch(
+        `${apiBase}/articles/${deletingArticle.id}`,
+        {
+          method: "DELETE",
+          headers,
+          signal: controller.signal,
+        }
+      );
+
+      clearTimeout(timeoutId);
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        let errorMsg = "";
+        if (response.status === 401) {
+          errorMsg =
+            "Sesi login telah berakhir atau token tidak valid (401 Unauthenticated). Silakan login kembali.";
+        } else if (response.status === 403) {
+          errorMsg =
+            "Akses ditolak (403 Forbidden). Anda tidak memiliki izin Admin untuk menghapus artikel ini.";
+        } else if (response.status === 404) {
+          errorMsg =
+            "Artikel tidak ditemukan atau telah dihapus sebelumnya (404).";
+        } else {
+          errorMsg =
+            data?.message ||
+            `Gagal menghapus artikel (Status ${response.status}).`;
+        }
+        throw new Error(errorMsg);
+      }
+
+      // Hapus dari data mock global articles
+      const idx = articles.findIndex((a) => a.id === deletingArticle.id);
+      if (idx !== -1) {
+        articles.splice(idx, 1);
+      }
+
+      // Perbarui state lokal agar UI langsung ter-update
+      setArticleList((prev) =>
+        prev.filter((a) => a.id !== deletingArticle.id)
+      );
+
+      setDeletingArticle(null);
+    } catch (err: unknown) {
+      clearTimeout(timeoutId);
+      let message = "Terjadi kesalahan saat menghapus artikel.";
+      if (err instanceof Error) {
+        if (err.name === "AbortError") {
+          message =
+            "Koneksi ke backend waktu habis (timeout). Pastikan server backend sedang aktif di port 8000.";
+        } else {
+          message = err.message;
+        }
+      }
+      setDeleteError(message);
+    } finally {
+      setDeleteLoading(false);
+    }
   };
 
   return (
@@ -1043,7 +1140,7 @@ function AdminPage({ type }: { type: string }) {
 
         <div className="table">
           {type === "articles" ? (
-            articles.map((a) => (
+            articleList.map((a) => (
               <div className="tr" key={a.id}>
                 <div>
                   <b>{a.title}</b>
@@ -1055,9 +1152,54 @@ function AdminPage({ type }: { type: string }) {
                   {a.status}
                 </span>
                 <span>{a.updated}</span>
-                <button onClick={() => go(`/admin/articles/${a.id}/edit`)}>
-                  Edit
-                </button>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => go(`/admin/articles/${a.id}/edit`)}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "var(--pink)",
+                      fontSize: "9px",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteError(null);
+                      setDeletingArticle(a);
+                    }}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "#f472b6",
+                      fontSize: "9px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      padding: 0,
+                      transition: "opacity 0.15s ease",
+                    }}
+                    onMouseEnter={(e) =>
+                      ((e.currentTarget as HTMLElement).style.opacity = "0.75")
+                    }
+                    onMouseLeave={(e) =>
+                      ((e.currentTarget as HTMLElement).style.opacity = "1")
+                    }
+                  >
+                    Hapus
+                  </button>
+                </div>
               </div>
             ))
           ) : type === "users" ? (
@@ -1120,6 +1262,73 @@ function AdminPage({ type }: { type: string }) {
               </button>
               <button className="primary" onClick={confirmRole}>
                 Ubah role
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deletingArticle && (
+        <div className="modal-bg">
+          <div className="confirm-dialog" role="dialog" aria-modal="true">
+            <span>!</span>
+            <h2>Hapus artikel?</h2>
+            <p>
+              Apakah Anda yakin ingin menghapus artikel &ldquo;{deletingArticle.title}&rdquo;? Tindakan ini tidak dapat dibatalkan.
+            </p>
+            {deleteError && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 14px",
+                  borderRadius: "8px",
+                  background: "rgba(244, 114, 182, 0.12)",
+                  border: "1px solid rgba(244, 114, 182, 0.25)",
+                  color: "var(--pink)",
+                  fontSize: "12px",
+                  lineHeight: "1.5",
+                }}
+                role="alert"
+              >
+                {deleteError}
+              </div>
+            )}
+            <div>
+              <button
+                type="button"
+                className="secondary"
+                disabled={deleteLoading}
+                onClick={() => {
+                  setDeletingArticle(null);
+                  setDeleteError(null);
+                }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={deleteLoading}
+                onClick={confirmDeleteArticle}
+                style={{
+                  height: "42px",
+                  padding: "0 18px",
+                  border: "1px solid rgba(244, 114, 182, 0.4)",
+                  borderRadius: "10px",
+                  background:
+                    "linear-gradient(135deg, rgba(244, 114, 182, 0.22), rgba(219, 39, 119, 0.28))",
+                  color: "var(--pink)",
+                  fontSize: "11px",
+                  fontWeight: 700,
+                  cursor: deleteLoading ? "not-allowed" : "pointer",
+                  opacity: deleteLoading ? 0.7 : 1,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "6px",
+                  boxShadow: "0 0 15px rgba(244, 125, 183, 0.1)",
+                }}
+              >
+                {deleteLoading ? "Menghapus..." : "Hapus"}
               </button>
             </div>
           </div>
@@ -1786,25 +1995,67 @@ function Login({ onLogin }: { onLogin: (role: "Admin" | "User") => void }) {
     setError("");
   };
 
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setError("");
+    setLoading(true);
+
+    try {
+      const rawBase =
+        process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
+      const apiBase = rawBase
+        .replace("localhost", "127.0.0.1")
+        .replace(/\/$/, "");
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+
+      const res = await fetch(`${apiBase}/auth/login`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({ email, password }),
+        signal: controller.signal,
+      });
+
+      clearTimeout(timer);
+      const data = await res.json().catch(() => null);
+
+      if (res.ok && data?.token) {
+        localStorage.setItem("wikiflow-token", data.token);
+        const resolvedRole =
+          data.user?.role?.toLowerCase() === "admin" ? "Admin" : "User";
+        onLogin(resolvedRole);
+        go("/app", true);
+        return;
+      }
+
+      if (data?.message) {
+        setError(data.message);
+        setLoading(false);
+        return;
+      }
+    } catch {
+      // Backend mungkin tidak terjangkau atau timeout, fallback ke autentikasi mock
+    }
+
     const role =
       email.toLowerCase() === "admin@wikiflow.test"
         ? "Admin"
         : email.toLowerCase() === "user@wikiflow.test"
-        ? "User"
-        : null;
+          ? "User"
+          : null;
 
     if (!role || password !== "password") {
       setError("Email atau password salah");
+      setLoading(false);
       return;
     }
 
-    setLoading(true);
-    setTimeout(() => {
-      onLogin(role);
-      go("/app", true);
-    }, 650);
+    onLogin(role);
+    go("/app", true);
   };
 
   return (
@@ -2055,6 +2306,8 @@ export default function App() {
 
   const logout = () => {
     localStorage.removeItem("wikiflow-role");
+    localStorage.removeItem("wikiflow-token");
+    localStorage.removeItem("token");
     setRole(null);
     go("/login", true);
   };
@@ -2107,17 +2360,17 @@ export default function App() {
   const fallback = path.startsWith("/articles/")
     ? "/articles"
     : path.startsWith("/categories/")
-    ? "/categories"
-    : path.startsWith("/tags/")
-    ? "/tags"
-    : path === "/admin/articles/new" ||
-      path.match(/\/admin\/articles\/\d+\/edit/)
-    ? "/articles"
-    : path.startsWith("/admin/articles/")
-    ? "/admin/articles"
-    : path.startsWith("/admin/")
-    ? "/admin"
-    : "/app";
+      ? "/categories"
+      : path.startsWith("/tags/")
+        ? "/tags"
+        : path === "/admin/articles/new" ||
+          path.match(/\/admin\/articles\/\d+\/edit/)
+          ? "/articles"
+          : path.startsWith("/admin/articles/")
+            ? "/admin/articles"
+            : path.startsWith("/admin/")
+              ? "/admin"
+              : "/app";
 
   const showBack = path !== "/app" && path !== "/admin";
 
