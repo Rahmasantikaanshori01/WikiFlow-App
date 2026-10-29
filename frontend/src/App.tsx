@@ -1,8 +1,37 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { articles, categories, tags, type Article } from "./data";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { BackButton } from "./components/BackButton";
+import { SafeMarkdown } from "./components/SafeMarkdown";
+import {
+  loginApi,
+  logoutApi,
+  getCurrentUser,
+  getArticlesApi,
+  getPopularArticlesApi,
+  getArticleBySlugApi,
+  recordArticleViewApi,
+  createArticleApi,
+  updateArticleApi,
+  deleteArticleApi,
+  getCategoriesApi,
+  createCategoryApi,
+  updateCategoryApi,
+  deleteCategoryApi,
+  getTagsApi,
+  createTagApi,
+  updateTagApi,
+  deleteTagApi,
+  getAdminUsersApi,
+  updateUserRoleApi,
+  type ApiUser,
+  type ApiCategory,
+  type ApiTag,
+} from "./api";
+import {
+  formatArticle,
+  type FormattedArticle,
+} from "./utils/formatters";
 
 /**
  * Komponen Icon SVG serbaguna untuk navigasi dan elemen UI
@@ -134,6 +163,7 @@ function Brand() {
  * Navigasi aplikasi berbasis client-side History API
  */
 function go(path: string, replace = false) {
+  if (typeof window === "undefined") return;
   const index = history.state?.idx ?? 0;
   if (replace) {
     history.replaceState({ ...(history.state || {}), idx: index }, "", path);
@@ -148,11 +178,15 @@ function go(path: string, replace = false) {
  * Mendukung deteksi otomatis tema laptop / sistem operasi secara real-time
  */
 function ThemeToggle() {
-  const [theme, setTheme] = useState("system");
+  const [theme, setTheme] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("wikiflow-theme") || "system";
+    }
+    return "system";
+  });
 
   useEffect(() => {
     const saved = localStorage.getItem("wikiflow-theme") || "system";
-    setTheme(saved);
 
     const applyTheme = (pref: string) => {
       const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
@@ -163,7 +197,6 @@ function ThemeToggle() {
 
     applyTheme(saved);
 
-    // Deteksi perubahan tema pada level sistem/laptop secara dinamis
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
     const handleSystemThemeChange = (e: MediaQueryListEvent) => {
       const currentSaved = localStorage.getItem("wikiflow-theme") || "system";
@@ -174,7 +207,6 @@ function ThemeToggle() {
 
     mediaQuery.addEventListener("change", handleSystemThemeChange);
 
-    // Sinkronisasi antar dropdown tema pada halaman
     const handleThemeSync = (event: Event) => {
       const nextTheme = (event as CustomEvent<string>).detail;
       setTheme(nextTheme);
@@ -236,14 +268,27 @@ const adminNavItems = [
  */
 function Sidebar({
   role,
+  user,
   close,
   logout,
 }: {
   role: "Admin" | "User";
+  user: ApiUser | null;
   close?: () => void;
   logout: () => void;
 }) {
   const path = location.pathname;
+
+  const initials = user?.name
+    ? user.name
+        .split(" ")
+        .map((w) => w[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : role === "Admin"
+      ? "AD"
+      : "US";
 
   const renderLink = ([label, icon, href]: string[]) => {
     const isActive =
@@ -259,7 +304,6 @@ function Sidebar({
       >
         <Icon name={icon} />
         <span>{label}</span>
-        {label === "Artikel Terbaru" && <i>4</i>}
       </button>
     );
   };
@@ -294,15 +338,15 @@ function Sidebar({
       </nav>
 
       <div className="side-bottom">
-        <button className="navitem">
+        <button className="navitem" onClick={() => go("/articles")}>
           <Icon name="book" />
-          <span>Help & Documentation</span>
+          <span>Dokumentasi Tim</span>
         </button>
 
         <div className="profile">
-          <span className="avatar">{role === "Admin" ? "RP" : "US"}</span>
+          <span className="avatar">{initials}</span>
           <div>
-            <b>{role === "Admin" ? "Raka Putra" : "WikiFlow User"}</b>
+            <b>{user?.name || (role === "Admin" ? "Administrator" : "User WikiFlow")}</b>
             <small>{role}</small>
           </div>
           <button title="Keluar" onClick={logout}>
@@ -316,14 +360,29 @@ function Sidebar({
 
 /**
  * Modal Dialog Pencarian Cepat (Ctrl+K)
+ * Terhubung langsung ke database backend melalui parameter search
  */
 function Search({ close }: { close: () => void }) {
   const [query, setQuery] = useState("");
-  const results = articles.filter(
-    (a) =>
-      a.status === "Published" &&
-      `${a.title} ${a.summary}`.toLowerCase().includes(query.toLowerCase())
-  );
+  const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<FormattedArticle[]>([]);
+
+  useEffect(() => {
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await getArticlesApi({ search: query.trim(), per_page: 5 });
+        const list = res.data?.data || [];
+        setResults(list.map(formatArticle));
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 250);
+
+    return () => clearTimeout(timer);
+  }, [query]);
 
   return (
     <div className="modal-bg" onMouseDown={close}>
@@ -341,11 +400,13 @@ function Search({ close }: { close: () => void }) {
 
         <div className="results">
           <small>
-            {query
-              ? `${results.length} HASIL DITEMUKAN`
-              : "ARTIKEL YANG DISARANKAN"}
+            {loading
+              ? "MENCARI..."
+              : query
+                ? `${results.length} HASIL DITEMUKAN`
+                : "ARTIKEL YANG DISARANKAN"}
           </small>
-          {results.slice(0, 4).map((item) => (
+          {results.map((item) => (
             <button
               key={item.id}
               onClick={() => {
@@ -366,7 +427,7 @@ function Search({ close }: { close: () => void }) {
               <Icon name="arrow" />
             </button>
           ))}
-          {!results.length && (
+          {!loading && !results.length && (
             <div className="empty">
               Tidak ada hasil ditemukan.
               <span>Coba gunakan kata kunci lain.</span>
@@ -383,10 +444,12 @@ function Search({ close }: { close: () => void }) {
  */
 function Topbar({
   role,
+  user,
   openMenu,
   openSearch,
 }: {
   role: "Admin" | "User";
+  user: ApiUser | null;
   openMenu: () => void;
   openSearch: () => void;
 }) {
@@ -394,7 +457,22 @@ function Topbar({
     ? "Administration"
     : location.pathname.includes("articles")
       ? "Artikel"
-      : "Knowledge Hub";
+      : location.pathname.includes("categories")
+        ? "Kategori"
+        : location.pathname.includes("tags")
+          ? "Tag"
+          : "Knowledge Hub";
+
+  const initials = user?.name
+    ? user.name
+        .split(" ")
+        .map((w) => w[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : role === "Admin"
+      ? "AD"
+      : "US";
 
   return (
     <header className="topbar">
@@ -427,7 +505,7 @@ function Topbar({
           onClick={() => go("/profile")}
           aria-label="Buka profil"
         >
-          {role === "Admin" ? "RP" : "US"}
+          {initials}
         </button>
       </div>
     </header>
@@ -441,9 +519,18 @@ function ArticleCard({
   a,
   showViews = false,
 }: {
-  a: Article;
+  a: FormattedArticle;
   showViews?: boolean;
 }) {
+  const authorInitials = a.author
+    ? a.author
+        .split(" ")
+        .map((x) => x[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : "WF";
+
   return (
     <button className="article-card" onClick={() => go(`/articles/${a.slug}`)}>
       <div className="card-copy">
@@ -462,12 +549,7 @@ function ArticleCard({
         <h3>{a.title}</h3>
         <p>{a.summary}</p>
         <footer>
-          <span className="mini-avatar">
-            {a.author
-              .split(" ")
-              .map((x) => x[0])
-              .join("")}
-          </span>
+          <span className="mini-avatar">{authorInitials}</span>
           <b>{a.author}</b>
           <i>•</i>
           <span>{a.updated}</span>
@@ -485,13 +567,68 @@ function ArticleCard({
 /**
  * Halaman Dashboard Utama
  */
-function Dashboard({ role }: { role: "Admin" | "User" }) {
+function Dashboard({
+  role,
+  user,
+}: {
+  role: "Admin" | "User";
+  user: ApiUser | null;
+}) {
+  const [latestArticles, setLatestArticles] = useState<FormattedArticle[]>([]);
+  const [popularArticles, setPopularArticles] = useState<FormattedArticle[]>([]);
+  const [categoriesList, setCategoriesList] = useState<ApiCategory[]>([]);
+  const [tagsList, setTagsList] = useState<ApiTag[]>([]);
+  const [totalArticles, setTotalArticles] = useState(0);
+  const [totalViews, setTotalViews] = useState(0);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadDashboardData() {
+      try {
+        const [articlesRes, popularRes, categoriesRes, tagsRes] = await Promise.all([
+          getArticlesApi({ sort: "latest", per_page: 3 }),
+          getPopularArticlesApi(4),
+          getCategoriesApi(),
+          getTagsApi(),
+        ]);
+
+        if (!isMounted) return;
+
+        const latestList = (articlesRes.data?.data || []).map(formatArticle);
+        const popList = (popularRes.data || []).map(formatArticle);
+
+        setLatestArticles(latestList);
+        setPopularArticles(popList);
+        setCategoriesList(categoriesRes.data || []);
+        setTagsList(tagsRes.data || []);
+        setTotalArticles(articlesRes.data?.total || latestList.length);
+
+        const viewsSum = popList.reduce((acc, curr) => acc + curr.views, 0);
+        setTotalViews(viewsSum);
+      } catch {
+        // Fallback jika jaringan mengalami timeout sementara
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadDashboardData();
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   const statList = [
-    ["file", "36", "Total Artikel", "pink"],
-    ["folder", "4", "Kategori", "lime"],
-    ["tag", "10", "Total Tag", "yellow"],
-    ["fire", "248", "Artikel Populer", "purple"],
+    ["file", String(totalArticles), "Total Artikel", "pink"],
+    ["folder", String(categoriesList.length), "Kategori", "lime"],
+    ["tag", String(tagsList.length), "Total Tag", "yellow"],
+    ["fire", String(totalViews), "Total Tayangan", "purple"],
   ];
+
+  const accents = ["pink", "lime", "yellow", "purple"];
 
   return (
     <>
@@ -514,7 +651,7 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
         <div>
           <small>SELAMAT DATANG KEMBALI</small>
           <h2>
-            Halo, Raka. <span>Mari berbagi pengetahuan.</span>
+            Halo, {user?.name || "Tim WikiFlow"}. <span>Mari berbagi pengetahuan.</span>
           </h2>
           <p>
             Temukan panduan, solusi teknis, dan dokumentasi terbaru dari tim.
@@ -533,10 +670,10 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
               <Icon name={icon} />
             </span>
             <div>
-              <b>{count}</b>
+              <b>{loading ? "..." : count}</b>
               <small>{label}</small>
             </div>
-            <em>↗ 12%</em>
+            <em>↗ live</em>
           </div>
         ))}
       </div>
@@ -553,13 +690,15 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
             </button>
           </div>
           <div className="article-list">
-            {articles
-              .filter((a) => a.status === "Published")
-              .sort((a, b) => b.publishedAt - a.publishedAt)
-              .slice(0, 3)
-              .map((a) => (
-                <ArticleCard a={a} key={a.id} />
-              ))}
+            {latestArticles.map((a) => (
+              <ArticleCard a={a} key={a.id} />
+            ))}
+            {!loading && latestArticles.length === 0 && (
+              <div className="empty">
+                Belum ada artikel yang diterbitkan.
+                <span>Mulai dengan membuat artikel baru.</span>
+              </div>
+            )}
           </div>
         </section>
 
@@ -578,21 +717,22 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
                 <Icon name="fire" />
               </button>
             </div>
-            {articles
-              .filter((a) => a.status === "Published")
-              .sort((a, b) => b.views - a.views)
-              .slice(0, 4)
-              .map((a, i) => (
-                <button key={a.id} onClick={() => go(`/articles/${a.slug}`)}>
-                  <b>0{i + 1}</b>
-                  <div>
-                    <strong>{a.title}</strong>
-                    <span>
-                      {a.category} · {a.views} tayangan
-                    </span>
-                  </div>
-                </button>
-              ))}
+            {popularArticles.map((a, i) => (
+              <button key={a.id} onClick={() => go(`/articles/${a.slug}`)}>
+                <b>0{i + 1}</b>
+                <div>
+                  <strong>{a.title}</strong>
+                  <span>
+                    {a.category} · {a.views} tayangan
+                  </span>
+                </div>
+              </button>
+            ))}
+            {!loading && popularArticles.length === 0 && (
+              <div className="empty" style={{ padding: "16px 0" }}>
+                Belum ada artikel populer.
+              </div>
+            )}
           </div>
 
           <div className="topics panel">
@@ -600,15 +740,18 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
               <h2>Topik Populer</h2>
             </div>
             <div>
-              {tags.slice(0, 7).map((t, i) => (
+              {tagsList.slice(0, 7).map((t) => (
                 <button
-                  key={t}
-                  onClick={() => go(`/tags/${t.toLowerCase()}`)}
+                  key={t.id}
+                  onClick={() => go(`/articles?tag=${encodeURIComponent(t.name)}`)}
                 >
-                  #{t}
-                  <span>{12 - i}</span>
+                  #{t.name}
+                  <span>{t.articles_count ?? 1}</span>
                 </button>
               ))}
+              {!loading && tagsList.length === 0 && (
+                <small style={{ color: "var(--muted)" }}>Belum ada tag.</small>
+              )}
             </div>
           </div>
         </aside>
@@ -625,22 +768,25 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
           </button>
         </div>
         <div className="cat-grid">
-          {categories.map((c) => (
+          {categoriesList.slice(0, 4).map((c, idx) => (
             <button
-              key={c.name}
-              onClick={() => go(`/categories/${c.slug}`)}
-              className={c.accent}
+              key={c.id}
+              onClick={() => go(`/articles?category=${encodeURIComponent(c.name)}`)}
+              className={accents[idx % accents.length]}
             >
               <span>
                 <Icon name="folder" />
               </span>
               <h3>{c.name}</h3>
-              <p>{c.desc}</p>
+              <p>{c.description || "Dokumentasi bidang kerja."}</p>
               <footer>
-                {c.count} artikel <Icon name="arrow" size={14} />
+                {c.articles_count ?? 0} artikel <Icon name="arrow" size={14} />
               </footer>
             </button>
           ))}
+          {!loading && categoriesList.length === 0 && (
+            <div className="empty">Belum ada kategori terdaftar.</div>
+          )}
         </div>
       </section>
     </>
@@ -648,7 +794,7 @@ function Dashboard({ role }: { role: "Admin" | "User" }) {
 }
 
 /**
- * Halaman Semua Artikel dengan Pencarian, Filter Kategori/Tag, dan Pengurutan
+ * Halaman Semua Artikel dengan Pencarian, Filter Kategori/Tag, dan Pengurutan Berbasis Database
  */
 function ArticlesPage({ role }: { role: "Admin" | "User" }) {
   const params = new URLSearchParams(location.search);
@@ -661,6 +807,12 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
   const selectedCategory = params.get("category") || "Semua kategori";
   const selectedTag = params.get("tag") || "Semua tag";
   const page = Math.max(1, Number(params.get("page")) || 1);
+
+  const [articlesList, setArticlesList] = useState<FormattedArticle[]>([]);
+  const [categoriesList, setCategoriesList] = useState<ApiCategory[]>([]);
+  const [tagsList, setTagsList] = useState<ApiTag[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   const updateFilters = (values: Record<string, string>) => {
     const next = new URLSearchParams(location.search);
@@ -675,27 +827,61 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
     go(`/articles${searchString ? `?${searchString}` : ""}`);
   };
 
-  const hasViews = articles.some((a) => a.status === "Published" && a.views > 0);
-  const effectiveSort = sort === "popular" && !hasViews ? "latest" : sort;
+  useEffect(() => {
+    let isMounted = true;
+    async function loadFilters() {
+      try {
+        const [cats, tgs] = await Promise.all([
+          getCategoriesApi(),
+          getTagsApi(),
+        ]);
+        if (isMounted) {
+          setCategoriesList(cats.data || []);
+          setTagsList(tgs.data || []);
+        }
+      } catch {
+        // ignore
+      }
+    }
+    loadFilters();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
-  const rows = articles
-    .filter(
-      (a) =>
-        a.status === "Published" &&
-        (selectedCategory === "Semua kategori" ||
-          a.category === selectedCategory) &&
-        (selectedTag === "Semua tag" || a.tags.includes(selectedTag)) &&
-        `${a.title} ${a.summary}`.toLowerCase().includes(query.toLowerCase())
-    )
-    .sort((a, b) => {
-      if (effectiveSort === "popular") {
-        return b.views - a.views || b.publishedAt - a.publishedAt;
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchArticles() {
+      setLoading(true);
+      try {
+        const res = await getArticlesApi({
+          search: query,
+          category: selectedCategory !== "Semua kategori" ? selectedCategory : undefined,
+          tag: selectedTag !== "Semua tag" ? selectedTag : undefined,
+          sort: sort as "latest" | "popular" | "oldest",
+          page: 1,
+          per_page: page * 6,
+        });
+
+        if (!isMounted) return;
+
+        const list = (res.data?.data || []).map(formatArticle);
+        setArticlesList(list);
+        setTotalCount(res.data?.total || list.length);
+      } catch {
+        if (isMounted) setArticlesList([]);
+      } finally {
+        if (isMounted) setLoading(false);
       }
-      if (effectiveSort === "oldest") {
-        return a.publishedAt - b.publishedAt;
-      }
-      return b.publishedAt - a.publishedAt;
-    });
+    }
+
+    fetchArticles();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [query, selectedCategory, selectedTag, sort, page]);
 
   return (
     <>
@@ -730,8 +916,10 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
           }
         >
           <option>Semua kategori</option>
-          {categories.map((c) => (
-            <option key={c.name}>{c.name}</option>
+          {categoriesList.map((c) => (
+            <option key={c.id} value={c.name}>
+              {c.name}
+            </option>
           ))}
         </select>
 
@@ -740,8 +928,10 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
           onChange={(e) => updateFilters({ tag: e.target.value, page: "1" })}
         >
           <option>Semua tag</option>
-          {tags.map((t) => (
-            <option key={t}>{t}</option>
+          {tagsList.map((t) => (
+            <option key={t.id} value={t.name}>
+              {t.name}
+            </option>
           ))}
         </select>
 
@@ -773,35 +963,33 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
         </select>
       </div>
 
-      {sort === "popular" && !hasViews && (
-        <p className="sort-note">
-          Belum ada data kunjungan, ditampilkan berdasarkan terbaru.
-        </p>
+      {loading && articlesList.length === 0 && (
+        <div className="empty">Memuat artikel...</div>
       )}
 
       <div className="article-list">
-        {rows.slice(0, page * 3).map((a) => (
+        {articlesList.map((a) => (
           <ArticleCard
             a={a}
-            showViews={sort === "popular" && hasViews}
+            showViews={sort === "popular"}
             key={a.id}
           />
         ))}
       </div>
 
-      {!rows.length && (
+      {!loading && articlesList.length === 0 && (
         <div className="empty large">
           Tidak ada artikel ditemukan.
           <span>Coba hapus filter atau gunakan kata kunci lain.</span>
         </div>
       )}
 
-      {page * 3 < rows.length && (
+      {articlesList.length < totalCount && (
         <button
           className="loadmore"
           onClick={() => updateFilters({ page: String(page + 1) })}
         >
-          Muat lebih banyak
+          Muat lebih banyak ({articlesList.length} dari {totalCount})
         </button>
       )}
     </>
@@ -812,6 +1000,33 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
  * Halaman Jelajahi Kategori atau Tag
  */
 function CategoriesPage({ tagsPage = false }: { tagsPage?: boolean }) {
+  const [categories, setCategories] = useState<ApiCategory[]>([]);
+  const [tags, setTags] = useState<ApiTag[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadData() {
+      try {
+        if (tagsPage) {
+          const res = await getTagsApi();
+          if (isMounted) setTags(res.data || []);
+        } else {
+          const res = await getCategoriesApi();
+          if (isMounted) setCategories(res.data || []);
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+    loadData();
+    return () => {
+      isMounted = false;
+    };
+  }, [tagsPage]);
+
+  const accents = ["pink", "lime", "yellow", "purple"];
+
   return (
     <>
       <div className="page-head">
@@ -826,33 +1041,42 @@ function CategoriesPage({ tagsPage = false }: { tagsPage?: boolean }) {
         </div>
       </div>
 
-      {tagsPage ? (
+      {loading ? (
+        <div className="empty">Memuat data...</div>
+      ) : tagsPage ? (
         <div className="tag-cloud">
-          {tags.map((t, i) => (
-            <button onClick={() => go(`/tags/${t.toLowerCase()}`)} key={t}>
-              #{t}
-              <span>{14 - i}</span>
+          {tags.map((t) => (
+            <button
+              onClick={() => go(`/articles?tag=${encodeURIComponent(t.name)}`)}
+              key={t.id}
+            >
+              #{t.name}
+              <span>{t.articles_count ?? 1}</span>
             </button>
           ))}
+          {tags.length === 0 && <div className="empty">Belum ada tag.</div>}
         </div>
       ) : (
         <div className="cat-grid big">
-          {categories.map((c) => (
+          {categories.map((c, index) => (
             <button
-              key={c.name}
-              className={c.accent}
-              onClick={() => go(`/categories/${c.slug}`)}
+              key={c.id}
+              className={accents[index % accents.length]}
+              onClick={() => go(`/articles?category=${encodeURIComponent(c.name)}`)}
             >
               <span>
                 <Icon name="folder" />
               </span>
               <h3>{c.name}</h3>
-              <p>{c.desc}</p>
+              <p>{c.description || "Kategori dokumentasi teknis."}</p>
               <footer>
-                {c.count} artikel <Icon name="arrow" />
+                {c.articles_count ?? 0} artikel <Icon name="arrow" />
               </footer>
             </button>
           ))}
+          {categories.length === 0 && (
+            <div className="empty">Belum ada kategori.</div>
+          )}
         </div>
       )}
     </>
@@ -860,20 +1084,81 @@ function CategoriesPage({ tagsPage = false }: { tagsPage?: boolean }) {
 }
 
 /**
- * Halaman Detail Artikel Dokumentasi
+ * Halaman Detail Artikel Dokumentasi dengan Safe Markdown Rendering dan View Tracking
  */
 function ArticleDetail() {
-  const slug = location.pathname.split("/").pop();
-  const article = articles.find((x) => x.slug === slug);
+  const slug = location.pathname.split("/").pop() || "";
+  const [article, setArticle] = useState<FormattedArticle | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [notFound, setNotFound] = useState(false);
 
-  if (!article) {
+  useEffect(() => {
+    let isMounted = true;
+
+    async function loadArticle() {
+      if (!slug) {
+        if (isMounted) {
+          setNotFound(true);
+          setLoading(false);
+        }
+        return;
+      }
+
+      setLoading(true);
+      setNotFound(false);
+      try {
+        const res = await getArticleBySlugApi(slug);
+        if (!isMounted) return;
+        const formatted = formatArticle(res.data);
+        setArticle(formatted);
+
+        // View tracking akurat: Hanya hitung 1 kali per slug per tab session
+        const sessionKey = `wf-viewed-${slug}`;
+        if (!sessionStorage.getItem(sessionKey)) {
+          sessionStorage.setItem(sessionKey, "1");
+          recordArticleViewApi(slug).then((viewRes) => {
+            if (isMounted && viewRes?.views) {
+              setArticle((prev) =>
+                prev ? { ...prev, views: viewRes.views } : prev
+              );
+            }
+          }).catch(() => {});
+        }
+      } catch {
+        if (isMounted) setNotFound(true);
+      } finally {
+        if (isMounted) setLoading(false);
+      }
+    }
+
+    loadArticle();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [slug]);
+
+  if (loading) {
+    return <div className="empty">Memuat detail artikel...</div>;
+  }
+
+  if (notFound || !article) {
     return (
       <EmptyPage
-        title="Halaman tidak ditemukan"
-        text="Artikel yang Anda cari tidak tersedia atau telah dipindahkan."
+        title="Artikel tidak ditemukan"
+        text="Artikel yang Anda cari tidak tersedia, berstatus draft, atau telah dipindahkan."
       />
     );
   }
+
+  const authorInitials = article.author
+    ? article.author
+        .split(" ")
+        .map((x) => x[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : "WF";
 
   return (
     <article className="doc">
@@ -882,14 +1167,14 @@ function ArticleDetail() {
       </div>
       <span className="category-pill">{article.category}</span>
       <h1>{article.title}</h1>
-      <p className="lead">{article.summary}</p>
+      {article.summary && <p className="lead">{article.summary}</p>}
 
       <div className="docmeta">
-        <span className="avatar">RP</span>
+        <span className="avatar">{authorInitials}</span>
         <div>
           <b>{article.author}</b>
           <small>
-            Diperbarui {article.updated} · {article.read} baca
+            Diperbarui {article.updated} · {article.read} baca · {article.views} tayangan
           </small>
         </div>
         <div className="doc-tags">
@@ -899,442 +1184,16 @@ function ArticleDetail() {
         </div>
       </div>
 
-      {article.content ? (
-        <div className="docbody new-article">
-          <aside>
-            <b>Di halaman ini</b>
-            <a href="#isi-artikel">Isi artikel</a>
-          </aside>
-          <section id="isi-artikel">
-            <div className="published-markdown">{article.content}</div>
-          </section>
-        </div>
-      ) : (
-        <div className="docbody">
-          <aside>
-            <b>Di halaman ini</b>
-            <a href="#overview">Ringkasan</a>
-            <a href="#prasyarat">Prasyarat</a>
-            <a href="#implementasi">Implementasi</a>
-          </aside>
-          <section>
-            <h2 id="overview">Ringkasan</h2>
-            <p>
-              Panduan ini menjelaskan standar yang digunakan tim Wikiflow agar
-              proses pengembangan tetap konsisten, aman, dan mudah direproduksi
-              oleh seluruh anggota tim.
-            </p>
-            <div className="note">
-              <b>Catatan penting</b>
-              <p>
-                Pastikan Anda memiliki akses ke repository internal dan
-                environment development sebelum memulai.
-              </p>
-            </div>
-
-            <h2 id="prasyarat">Prasyarat</h2>
-            <ul>
-              <li>Node.js versi 18 atau lebih baru</li>
-              <li>Docker Desktop dan Git</li>
-              <li>Akses ke workspace internal tim</li>
-            </ul>
-
-            <h2 id="implementasi">Implementasi</h2>
-            <p>
-              Salin repository dan pasang dependency proyek menggunakan
-              perintah berikut:
-            </p>
-            <div className="code">
-              <header>
-                <span>bash</span>
-                <button
-                  onClick={() => navigator.clipboard.writeText("pnpm install")}
-                >
-                  <Icon name="copy" />
-                  Salin
-                </button>
-              </header>
-              <pre>
-                git clone git@github.com:team/wikiflow.git{"\n"}
-                cd wikiflow{"\n"}
-                pnpm install{"\n"}
-                pnpm dev
-              </pre>
-            </div>
-
-            <h2>Langkah berikutnya</h2>
-            <p>
-              Baca standar Git Workflow sebelum membuat branch dan mengirim
-              pull request pertama Anda.
-            </p>
-          </section>
-        </div>
-      )}
+      <div className="docbody new-article">
+        <aside>
+          <b>Di halaman ini</b>
+          <a href="#isi-artikel">Isi artikel</a>
+        </aside>
+        <section id="isi-artikel">
+          <SafeMarkdown content={article.content} className="published-markdown" />
+        </section>
+      </div>
     </article>
-  );
-}
-
-/**
- * Halaman Manajemen Administrasi (Artikel, Kategori, Tag, Pengguna)
- */
-function AdminPage({ type }: { type: string }) {
-  const labels: Record<string, string> = {
-    articles: "Artikel",
-    categories: "Kategori",
-    tags: "Tag",
-    users: "Pengguna",
-  };
-
-  const [articleList, setArticleList] = useState<Article[]>(() => [...articles]);
-  const [deletingArticle, setDeletingArticle] = useState<Article | null>(null);
-  const [deleteLoading, setDeleteLoading] = useState(false);
-  const [deleteError, setDeleteError] = useState<string | null>(null);
-
-  const [users, setUsers] = useState([
-    { name: "Raka Putra", role: "Admin" as const },
-    { name: "Nadia Aulia", role: "User" as const },
-    { name: "Aditya Rama", role: "User" as const },
-    { name: "Sinta Dewi", role: "User" as const },
-  ]);
-
-  const [pending, setPending] = useState<null | {
-    index: number;
-    role: "Admin" | "User";
-  }>(null);
-
-  const confirmRole = () => {
-    if (!pending) return;
-    setUsers((current) =>
-      current.map((user, index) =>
-        index === pending.index ? { ...user, role: pending.role } : user
-      )
-    );
-    setPending(null);
-  };
-
-  const confirmDeleteArticle = async () => {
-    if (!deletingArticle) return;
-
-    setDeleteLoading(true);
-    setDeleteError(null);
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-    try {
-      const rawBase =
-        process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
-      const apiBase = rawBase
-        .replace("localhost", "127.0.0.1")
-        .replace(/\/$/, "");
-
-      const token =
-        localStorage.getItem("wikiflow-token") ||
-        localStorage.getItem("token") ||
-        localStorage.getItem("access_token");
-
-      if (!token) {
-        throw new Error(
-          "Sesi autentikasi tidak ditemukan. Token akses Sanctum belum tersedia. Silakan keluar dan login kembali sebagai Admin."
-        );
-      }
-
-      const headers: Record<string, string> = {
-        Accept: "application/json",
-        Authorization: `Bearer ${token}`,
-      };
-
-      const response = await fetch(
-        `${apiBase}/articles/${deletingArticle.id}`,
-        {
-          method: "DELETE",
-          headers,
-          signal: controller.signal,
-        }
-      );
-
-      clearTimeout(timeoutId);
-      const data = await response.json().catch(() => null);
-
-      if (!response.ok) {
-        let errorMsg = "";
-        if (response.status === 401) {
-          errorMsg =
-            "Sesi login telah berakhir atau token tidak valid (401 Unauthenticated). Silakan login kembali.";
-        } else if (response.status === 403) {
-          errorMsg =
-            "Akses ditolak (403 Forbidden). Anda tidak memiliki izin Admin untuk menghapus artikel ini.";
-        } else if (response.status === 404) {
-          errorMsg =
-            "Artikel tidak ditemukan atau telah dihapus sebelumnya (404).";
-        } else {
-          errorMsg =
-            data?.message ||
-            `Gagal menghapus artikel (Status ${response.status}).`;
-        }
-        throw new Error(errorMsg);
-      }
-
-      // Hapus dari data mock global articles
-      const idx = articles.findIndex((a) => a.id === deletingArticle.id);
-      if (idx !== -1) {
-        articles.splice(idx, 1);
-      }
-
-      // Perbarui state lokal agar UI langsung ter-update
-      setArticleList((prev) =>
-        prev.filter((a) => a.id !== deletingArticle.id)
-      );
-
-      setDeletingArticle(null);
-    } catch (err: unknown) {
-      clearTimeout(timeoutId);
-      let message = "Terjadi kesalahan saat menghapus artikel.";
-      if (err instanceof Error) {
-        if (err.name === "AbortError") {
-          message =
-            "Koneksi ke backend waktu habis (timeout). Pastikan server backend sedang aktif di port 8000.";
-        } else {
-          message = err.message;
-        }
-      }
-      setDeleteError(message);
-    } finally {
-      setDeleteLoading(false);
-    }
-  };
-
-  return (
-    <>
-      <div className="page-head">
-        <div>
-          <span className="eyebrow">ADMINISTRATION</span>
-          <h1>Kelola {labels[type]}</h1>
-          <p>Kelola data dan hak akses workspace Wikiflow.</p>
-        </div>
-        <button
-          className="primary"
-          onClick={() =>
-            type === "articles"
-              ? go("/admin/articles/new")
-              : alert(`Form tambah ${labels[type]} siap dibuka.`)
-          }
-        >
-          <Icon name="plus" />
-          Tambah {labels[type]}
-        </button>
-      </div>
-
-      <div className="admin-card">
-        <div className="filters">
-          <label>
-            <Icon name="search" />
-            <input placeholder={`Cari ${labels[type]?.toLowerCase()}...`} />
-          </label>
-          <select>
-            <option>Semua status</option>
-            <option>Published</option>
-            <option>Draft</option>
-          </select>
-        </div>
-
-        <div className="table">
-          {type === "articles" ? (
-            articleList.map((a) => (
-              <div className="tr" key={a.id}>
-                <div>
-                  <b>{a.title}</b>
-                  <small>
-                    {a.category} · {a.author}
-                  </small>
-                </div>
-                <span className={`status ${a.status.toLowerCase()}`}>
-                  {a.status}
-                </span>
-                <span>{a.updated}</span>
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    justifyContent: "flex-end",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => go(`/admin/articles/${a.id}/edit`)}
-                    style={{
-                      border: 0,
-                      background: "none",
-                      color: "var(--pink)",
-                      fontSize: "9px",
-                      cursor: "pointer",
-                      padding: 0,
-                    }}
-                  >
-                    Edit
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDeleteError(null);
-                      setDeletingArticle(a);
-                    }}
-                    style={{
-                      border: 0,
-                      background: "none",
-                      color: "#f472b6",
-                      fontSize: "9px",
-                      fontWeight: 600,
-                      cursor: "pointer",
-                      padding: 0,
-                      transition: "opacity 0.15s ease",
-                    }}
-                    onMouseEnter={(e) =>
-                      ((e.currentTarget as HTMLElement).style.opacity = "0.75")
-                    }
-                    onMouseLeave={(e) =>
-                      ((e.currentTarget as HTMLElement).style.opacity = "1")
-                    }
-                  >
-                    Hapus
-                  </button>
-                </div>
-              </div>
-            ))
-          ) : type === "users" ? (
-            users.map((user, index) => (
-              <div className="tr user-row" key={user.name}>
-                <div>
-                  <b>{user.name}</b>
-                  <small>
-                    {user.name.toLowerCase().replace(" ", ".")}@wikiflow.id
-                  </small>
-                </div>
-                <span className={`role-badge ${user.role.toLowerCase()}`}>
-                  {user.role}
-                </span>
-                <span>12 Mei 2025</span>
-                <select
-                  aria-label={`Ubah role ${user.name}`}
-                  value={user.role}
-                  onChange={(e) =>
-                    setPending({
-                      index,
-                      role: e.target.value as "Admin" | "User",
-                    })
-                  }
-                >
-                  <option>Admin</option>
-                  <option>User</option>
-                </select>
-              </div>
-            ))
-          ) : (
-            <div className="tag-cloud compact">
-              {(type === "tags" ? tags : categories.map((c) => c.name)).map(
-                (item, index) => (
-                  <button key={item}>
-                    {item}
-                    <span>{14 - index} artikel</span>
-                  </button>
-                )
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {pending && (
-        <div className="modal-bg">
-          <div className="confirm-dialog" role="dialog" aria-modal="true">
-            <span>!</span>
-            <h2>Ubah role pengguna?</h2>
-            <p>
-              Ubah role {users[pending.index].name} menjadi {pending.role}?
-            </p>
-            <div>
-              <button
-                className="secondary"
-                onClick={() => setPending(null)}
-              >
-                Batal
-              </button>
-              <button className="primary" onClick={confirmRole}>
-                Ubah role
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {deletingArticle && (
-        <div className="modal-bg">
-          <div className="confirm-dialog" role="dialog" aria-modal="true">
-            <span>!</span>
-            <h2>Hapus artikel?</h2>
-            <p>
-              Apakah Anda yakin ingin menghapus artikel &ldquo;{deletingArticle.title}&rdquo;? Tindakan ini tidak dapat dibatalkan.
-            </p>
-            {deleteError && (
-              <div
-                style={{
-                  marginTop: "14px",
-                  padding: "10px 14px",
-                  borderRadius: "8px",
-                  background: "rgba(244, 114, 182, 0.12)",
-                  border: "1px solid rgba(244, 114, 182, 0.25)",
-                  color: "var(--pink)",
-                  fontSize: "12px",
-                  lineHeight: "1.5",
-                }}
-                role="alert"
-              >
-                {deleteError}
-              </div>
-            )}
-            <div>
-              <button
-                type="button"
-                className="secondary"
-                disabled={deleteLoading}
-                onClick={() => {
-                  setDeletingArticle(null);
-                  setDeleteError(null);
-                }}
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                disabled={deleteLoading}
-                onClick={confirmDeleteArticle}
-                style={{
-                  height: "42px",
-                  padding: "0 18px",
-                  border: "1px solid rgba(244, 114, 182, 0.4)",
-                  borderRadius: "10px",
-                  background:
-                    "linear-gradient(135deg, rgba(244, 114, 182, 0.22), rgba(219, 39, 119, 0.28))",
-                  color: "var(--pink)",
-                  fontSize: "11px",
-                  fontWeight: 700,
-                  cursor: deleteLoading ? "not-allowed" : "pointer",
-                  opacity: deleteLoading ? 0.7 : 1,
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: "6px",
-                  boxShadow: "0 0 15px rgba(244, 125, 183, 0.1)",
-                }}
-              >
-                {deleteLoading ? "Menghapus..." : "Hapus"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </>
   );
 }
 
@@ -1342,21 +1201,28 @@ function AdminPage({ type }: { type: string }) {
  * Halaman Editor untuk Membuat dan Mengedit Artikel
  */
 function Editor() {
+  const path = location.pathname;
+  const isEditing = path.includes("/edit");
+  const editId = isEditing
+    ? Number(path.split("/")[3]) || null
+    : null;
+
   const [title, setTitle] = useState("");
   const [summary, setSummary] = useState("");
-  const [category, setCategory] = useState("");
+  const [categoryId, setCategoryId] = useState<number | "">("");
   const [content, setContent] = useState("");
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([]);
   const [dirty, setDirty] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
   const [confirm, setConfirm] = useState<null | (() => void)>(null);
 
-  const [categoryOptions, setCategoryOptions] = useState([...categories]);
+  const [categoryOptions, setCategoryOptions] = useState<ApiCategory[]>([]);
   const [showCategoryForm, setShowCategoryForm] = useState(false);
   const [newCategory, setNewCategory] = useState("");
 
-  const [tagOptions, setTagOptions] = useState([...tags]);
-  const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [tagOptions, setTagOptions] = useState<ApiTag[]>([]);
   const [showTagForm, setShowTagForm] = useState(false);
   const [newTag, setNewTag] = useState("");
 
@@ -1364,6 +1230,50 @@ function Editor() {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+
+  // Load Kategori & Tag
+  useEffect(() => {
+    async function loadMeta() {
+      try {
+        const [cats, tgs] = await Promise.all([
+          getCategoriesApi(),
+          getTagsApi(),
+        ]);
+        setCategoryOptions(cats.data || []);
+        setTagOptions(tgs.data || []);
+      } catch {
+        // ignore
+      }
+    }
+    loadMeta();
+  }, []);
+
+  // Jika mode edit, muat artikel yang sudah ada
+  useEffect(() => {
+    if (!isEditing || !editId) return;
+
+    async function loadExistingArticle() {
+      setLoading(true);
+      try {
+        const articlesRes = await getArticlesApi({ per_page: 100 });
+        const found = (articlesRes.data?.data || []).find((a) => a.id === editId);
+
+        if (found) {
+          setTitle(found.title);
+          setSummary(found.excerpt || "");
+          setContent(found.content || "");
+          setCategoryId(found.category_id || found.category?.id || "");
+          setSelectedTagIds((found.tags || []).map((t) => t.id));
+        }
+      } catch {
+        setError("Gagal memuat artikel untuk diedit.");
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadExistingArticle();
+  }, [isEditing, editId]);
 
   useEffect(() => {
     const handleUnload = (e: BeforeUnloadEvent) => {
@@ -1387,52 +1297,64 @@ function Editor() {
     };
   }, [dirty]);
 
-  const uniqueSlug = () => {
-    let value = slug || "artikel-baru";
-    let count = 2;
-    while (articles.some((a) => a.slug === value)) {
-      value = `${slug}-${count++}`;
-    }
-    return value;
-  };
-
-  const makeArticle = (status: "Draft" | "Published") => ({
-    id: Math.max(...articles.map((a) => a.id)) + 1,
-    title: title.trim() || "Draft tanpa judul",
-    slug: uniqueSlug(),
-    summary: summary.trim() || "Ringkasan belum ditambahkan.",
-    content: content.trim(),
-    category: category || "Engineering",
-    tags: selectedTags.length ? selectedTags : ["Dokumentasi"],
-    author: "Raka Putra",
-    updated: "Hari ini",
-    read: "5 mnt",
-    views: 0,
-    status,
-    publishedAt: status === "Published" ? Date.now() : 0,
-  });
-
-  const saveDraft = () => {
-    const article = makeArticle("Draft");
-    articles.unshift(article);
-    setDirty(false);
-    setSaved(true);
+  const handleSave = async (status: "draft" | "published") => {
     setError("");
-  };
 
-  const publishArticle = () => {
-    if (!title.trim() || !content.trim()) {
-      setError(
-        !title.trim()
-          ? "Judul artikel wajib diisi."
-          : "Isi artikel wajib diisi sebelum publikasi."
-      );
+    if (!title.trim()) {
+      setError("Judul artikel wajib diisi.");
       return;
     }
-    const article = makeArticle("Published");
-    articles.unshift(article);
-    setDirty(false);
-    go(`/articles/${article.slug}`, true);
+
+    if (!content.trim()) {
+      setError("Isi artikel wajib diisi.");
+      return;
+    }
+
+    if (!categoryId) {
+      setError("Kategori artikel wajib dipilih.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      if (isEditing && editId) {
+        await updateArticleApi(editId, {
+          title: title.trim(),
+          content: content.trim(),
+          excerpt: summary.trim() || null,
+          category_id: Number(categoryId),
+          tag_ids: selectedTagIds,
+          status,
+        });
+      } else {
+        await createArticleApi({
+          title: title.trim(),
+          content: content.trim(),
+          excerpt: summary.trim() || null,
+          category_id: Number(categoryId),
+          tag_ids: selectedTagIds,
+          status,
+        });
+      }
+
+      setDirty(false);
+      setSaved(true);
+
+      if (status === "published") {
+        go("/admin/articles", true);
+      } else {
+        setTimeout(() => setSaved(false), 3000);
+      }
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string; errors?: Record<string, string[]> };
+      const validationMsgs = apiErr.errors
+        ? Object.values(apiErr.errors).flat().join(" ")
+        : null;
+      setError(validationMsgs || apiErr.message || "Gagal menyimpan artikel.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const insertSnippet = (snippet: string) => {
@@ -1440,67 +1362,69 @@ function Editor() {
     setDirty(true);
   };
 
-  const addCategory = () => {
+  const handleAddCategory = async () => {
     const name = newCategory.trim();
     if (!name) return;
-    const existing = categoryOptions.find(
-      (c) => c.name.toLowerCase() === name.toLowerCase()
-    );
-    if (existing) {
-      setCategory(existing.name);
-    } else {
-      const item = {
-        name,
-        slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
-        count: 0,
-        desc: "Kategori dokumentasi baru.",
-        accent: "pink",
-      };
-      categories.push(item);
-      setCategoryOptions((prev) => [...prev, item]);
-      setCategory(name);
-    }
-    setNewCategory("");
-    setShowCategoryForm(false);
-    setDirty(true);
-  };
 
-  const addSelectedTag = (tagName: string) => {
-    if (tagName && !selectedTags.includes(tagName)) {
-      setSelectedTags((prev) => [...prev, tagName]);
+    try {
+      const res = await createCategoryApi({ name });
+      const created = res.data;
+      setCategoryOptions((prev) => [...prev, created]);
+      setCategoryId(created.id);
+      setNewCategory("");
+      setShowCategoryForm(false);
       setDirty(true);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      setError(apiErr.message || "Gagal membuat kategori baru.");
     }
   };
 
-  const createNewTag = () => {
+  const handleCreateTag = async () => {
     const name = newTag.trim();
     if (!name) return;
-    const existing =
-      tagOptions.find((t) => t.toLowerCase() === name.toLowerCase()) || name;
-    if (!tagOptions.includes(existing)) {
-      tags.push(existing);
-      setTagOptions((prev) => [...prev, existing]);
+
+    try {
+      const res = await createTagApi({ name });
+      const created = res.data;
+      setTagOptions((prev) => [...prev, created]);
+      if (!selectedTagIds.includes(created.id)) {
+        setSelectedTagIds((prev) => [...prev, created.id]);
+      }
+      setNewTag("");
+      setShowTagForm(false);
+      setDirty(true);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      setError(apiErr.message || "Gagal membuat tag baru.");
     }
-    addSelectedTag(existing);
-    setNewTag("");
-    setShowTagForm(false);
   };
 
   return (
     <>
       <div className="page-head editor-head">
         <div>
-          <span className="eyebrow">KELOLA ARTIKEL / BUAT</span>
-          <h1>Buat Artikel Baru</h1>
+          <span className="eyebrow">
+            {isEditing ? "KELOLA ARTIKEL / EDIT" : "KELOLA ARTIKEL / BUAT"}
+          </span>
+          <h1>{isEditing ? "Edit Artikel" : "Buat Artikel Baru"}</h1>
           <p>Dokumentasikan pengetahuan teknis untuk tim.</p>
         </div>
         <div>
           {saved && <span className="saved-state">Draft tersimpan</span>}
-          <button className="secondary" onClick={saveDraft}>
-            Simpan Draft
+          <button
+            className="secondary"
+            disabled={loading}
+            onClick={() => handleSave("draft")}
+          >
+            {loading ? "Menyimpan..." : "Simpan Draft"}
           </button>
-          <button className="primary" onClick={publishArticle}>
-            Publikasikan
+          <button
+            className="primary"
+            disabled={loading}
+            onClick={() => handleSave("published")}
+          >
+            {loading ? "Menerbitkan..." : "Publikasikan"}
           </button>
         </div>
       </div>
@@ -1546,12 +1470,14 @@ function Editor() {
             <label>
               Kategori
               <select
-                value={category}
-                onChange={(e) => setCategory(e.target.value)}
+                value={categoryId}
+                onChange={(e) => setCategoryId(Number(e.target.value) || "")}
               >
                 <option value="">Pilih kategori</option>
                 {categoryOptions.map((c) => (
-                  <option key={c.name}>{c.name}</option>
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
                 ))}
               </select>
             </label>
@@ -1561,10 +1487,10 @@ function Editor() {
                   autoFocus
                   value={newCategory}
                   onChange={(e) => setNewCategory(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && addCategory()}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddCategory()}
                   placeholder="Nama kategori baru"
                 />
-                <button type="button" onClick={addCategory}>
+                <button type="button" onClick={handleAddCategory}>
                   Simpan
                 </button>
                 <button
@@ -1590,35 +1516,46 @@ function Editor() {
               Tag
               <select
                 value=""
-                onChange={(e) => addSelectedTag(e.target.value)}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  if (val && !selectedTagIds.includes(val)) {
+                    setSelectedTagIds((prev) => [...prev, val]);
+                    setDirty(true);
+                  }
+                }}
               >
                 <option value="">Pilih tag</option>
                 {tagOptions
-                  .filter((t) => !selectedTags.includes(t))
+                  .filter((t) => !selectedTagIds.includes(t.id))
                   .map((t) => (
-                    <option key={t}>{t}</option>
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
                   ))}
               </select>
             </label>
 
-            {selectedTags.length > 0 && (
+            {selectedTagIds.length > 0 && (
               <div className="selected-chips">
-                {selectedTags.map((tag) => (
-                  <span key={tag}>
-                    #{tag}
-                    <button
-                      type="button"
-                      aria-label={`Hapus tag ${tag}`}
-                      onClick={() =>
-                        setSelectedTags((prev) =>
-                          prev.filter((item) => item !== tag)
-                        )
-                      }
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
+                {selectedTagIds.map((tid) => {
+                  const tagItem = tagOptions.find((t) => t.id === tid);
+                  return (
+                    <span key={tid}>
+                      #{tagItem?.name || tid}
+                      <button
+                        type="button"
+                        aria-label="Hapus tag"
+                        onClick={() =>
+                          setSelectedTagIds((prev) =>
+                            prev.filter((item) => item !== tid)
+                          )
+                        }
+                      >
+                        ×
+                      </button>
+                    </span>
+                  );
+                })}
               </div>
             )}
 
@@ -1628,10 +1565,10 @@ function Editor() {
                   autoFocus
                   value={newTag}
                   onChange={(e) => setNewTag(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && createNewTag()}
+                  onKeyDown={(e) => e.key === "Enter" && handleCreateTag()}
                   placeholder="Nama tag baru"
                 />
-                <button type="button" onClick={createNewTag}>
+                <button type="button" onClick={handleCreateTag}>
                   Simpan
                 </button>
                 <button
@@ -1656,7 +1593,7 @@ function Editor() {
         <div className="markdown">
           <header>
             <div>
-              <b>Isi Artikel</b>
+              <b>Isi Artikel (Markdown)</b>
               <small> Wajib diisi</small>
             </div>
             <div>
@@ -1701,9 +1638,9 @@ function Editor() {
               }
             />
             <section>
-              <small>LIVE PREVIEW</small>
+              <small>LIVE PREVIEW (AMAN & XSS-FREE)</small>
               {content ? (
-                <div className="preview-content">{content}</div>
+                <SafeMarkdown content={content} className="preview-content" />
               ) : (
                 <div className="preview-empty">
                   Preview isi artikel akan tampil di sini.
@@ -1750,9 +1687,619 @@ function Editor() {
 }
 
 /**
+ * Halaman Manajemen Administrasi (Artikel, Kategori, Tag, Pengguna)
+ * Terhubung langsung ke API CRUD dan otorisasi role Admin di Laravel
+ */
+function AdminPage({ type }: { type: string }) {
+  const labels: Record<string, string> = {
+    articles: "Artikel",
+    categories: "Kategori",
+    tags: "Tag",
+    users: "Pengguna",
+  };
+
+  const [articles, setArticles] = useState<FormattedArticle[]>([]);
+  const [categories, setCategories] = useState<ApiCategory[]>([]);
+  const [tags, setTags] = useState<ApiTag[]>([]);
+  const [users, setUsers] = useState<ApiUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [feedback, setFeedback] = useState<string | null>(null);
+
+  // Modal Delete Article
+  const [deletingArticle, setDeletingArticle] = useState<FormattedArticle | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  // Modal Ubah Role Pengguna
+  const [pendingUserRole, setPendingUserRole] = useState<{
+    user: ApiUser;
+    nextRole: "admin" | "user";
+  } | null>(null);
+
+  // Modal Tambah / Edit Kategori / Tag
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<ApiCategory | null>(null);
+  const [editingTag, setEditingTag] = useState<ApiTag | null>(null);
+  const [createName, setCreateName] = useState("");
+  const [createDesc, setCreateDesc] = useState("");
+
+  const loadData = useCallback(async () => {
+    Promise.resolve().then(() => setLoading(true));
+    try {
+      if (type === "articles") {
+        const res = await getArticlesApi({ per_page: 50 });
+        setArticles((res.data?.data || []).map(formatArticle));
+      } else if (type === "categories") {
+        const res = await getCategoriesApi();
+        setCategories(res.data || []);
+      } else if (type === "tags") {
+        const res = await getTagsApi();
+        setTags(res.data || []);
+      } else if (type === "users") {
+        const res = await getAdminUsersApi();
+        setUsers(res.data || []);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  }, [type]);
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      if (isMounted) await loadData();
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, [loadData]);
+
+  const confirmDeleteArticle = async () => {
+    if (!deletingArticle) return;
+    setDeleteLoading(true);
+    setDeleteError(null);
+
+    try {
+      await deleteArticleApi(deletingArticle.id);
+      setArticles((prev) => prev.filter((a) => a.id !== deletingArticle.id));
+      setDeletingArticle(null);
+      setFeedback("Artikel berhasil dihapus.");
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      setDeleteError(apiErr.message || "Gagal menghapus artikel.");
+    } finally {
+      setDeleteLoading(false);
+    }
+  };
+
+  const confirmChangeRole = async () => {
+    if (!pendingUserRole) return;
+    const { user, nextRole } = pendingUserRole;
+
+    try {
+      await updateUserRoleApi(user.id, nextRole);
+      setUsers((prev) =>
+        prev.map((u) => (u.id === user.id ? { ...u, role: nextRole } : u))
+      );
+      setPendingUserRole(null);
+      setFeedback(`Role ${user.name} berhasil diubah menjadi ${nextRole}.`);
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      alert(apiErr.message || "Gagal mengubah role pengguna.");
+      setPendingUserRole(null);
+    }
+  };
+
+  const handleSaveCategoryOrTag = async () => {
+    if (!createName.trim()) return;
+
+    try {
+      if (type === "categories") {
+        if (editingCategory) {
+          await updateCategoryApi(editingCategory.id, {
+            name: createName.trim(),
+            description: createDesc.trim() || undefined,
+          });
+          setFeedback("Kategori berhasil diperbarui.");
+        } else {
+          await createCategoryApi({
+            name: createName.trim(),
+            description: createDesc.trim() || undefined,
+          });
+          setFeedback("Kategori berhasil ditambahkan.");
+        }
+      } else if (type === "tags") {
+        if (editingTag) {
+          await updateTagApi(editingTag.id, { name: createName.trim() });
+          setFeedback("Tag berhasil diperbarui.");
+        } else {
+          await createTagApi({ name: createName.trim() });
+          setFeedback("Tag berhasil ditambahkan.");
+        }
+      }
+
+      setCreateName("");
+      setCreateDesc("");
+      setEditingCategory(null);
+      setEditingTag(null);
+      setShowCreateModal(false);
+      loadData();
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      alert(apiErr.message || "Gagal menyimpan data.");
+    }
+  };
+
+  const handleDeleteCategory = async (cat: ApiCategory) => {
+    if (!window.confirm(`Hapus kategori "${cat.name}"?`)) return;
+
+    try {
+      await deleteCategoryApi(cat.id);
+      setCategories((prev) => prev.filter((c) => c.id !== cat.id));
+      setFeedback("Kategori berhasil dihapus.");
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      alert(apiErr.message || "Kategori tidak dapat dihapus.");
+    }
+  };
+
+  const handleDeleteTag = async (t: ApiTag) => {
+    if (!window.confirm(`Hapus tag "${t.name}"?`)) return;
+
+    try {
+      await deleteTagApi(t.id);
+      setTags((prev) => prev.filter((item) => item.id !== t.id));
+      setFeedback("Tag berhasil dihapus.");
+      setTimeout(() => setFeedback(null), 3000);
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string };
+      alert(apiErr.message || "Gagal menghapus tag.");
+    }
+  };
+
+  return (
+    <>
+      <div className="page-head">
+        <div>
+          <span className="eyebrow">ADMINISTRATION</span>
+          <h1>Kelola {labels[type]}</h1>
+          <p>Kelola data dan hak akses workspace Wikiflow.</p>
+        </div>
+        <button
+          className="primary"
+          onClick={() => {
+            if (type === "articles") {
+              go("/admin/articles/new");
+            } else {
+              setEditingCategory(null);
+              setEditingTag(null);
+              setCreateName("");
+              setCreateDesc("");
+              setShowCreateModal(true);
+            }
+          }}
+        >
+          <Icon name="plus" />
+          Tambah {labels[type]}
+        </button>
+      </div>
+
+      {feedback && (
+        <div
+          style={{
+            marginBottom: "16px",
+            padding: "10px 16px",
+            background: "rgba(16, 185, 129, 0.12)",
+            border: "1px solid rgba(16, 185, 129, 0.3)",
+            borderRadius: "8px",
+            color: "#10b981",
+            fontSize: "13px",
+          }}
+        >
+          {feedback}
+        </div>
+      )}
+
+      <div className="admin-card">
+        <div className="filters">
+          <label>
+            <Icon name="search" />
+            <input placeholder={`Cari ${labels[type]?.toLowerCase()}...`} />
+          </label>
+          <select>
+            <option>Semua status</option>
+            <option>Published</option>
+            <option>Draft</option>
+          </select>
+        </div>
+
+        <div className="table">
+          {loading ? (
+            <div className="empty">Memuat data {labels[type]}...</div>
+          ) : type === "articles" ? (
+            articles.map((a) => (
+              <div className="tr" key={a.id}>
+                <div>
+                  <b>{a.title}</b>
+                  <small>
+                    {a.category} · {a.author}
+                  </small>
+                </div>
+                <span className={`status ${a.status.toLowerCase()}`}>
+                  {a.status}
+                </span>
+                <span>{a.updated}</span>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => go(`/admin/articles/${a.id}/edit`)}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "var(--pink)",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDeleteError(null);
+                      setDeletingArticle(a);
+                    }}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "#f472b6",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : type === "users" ? (
+            users.map((user) => (
+              <div className="tr user-row" key={user.id}>
+                <div>
+                  <b>{user.name}</b>
+                  <small>{user.email}</small>
+                </div>
+                <span className={`role-badge ${user.role.toLowerCase()}`}>
+                  {user.role}
+                </span>
+                <span>{user.created_at ? user.created_at.slice(0, 10) : "Aktif"}</span>
+                <select
+                  aria-label={`Ubah role ${user.name}`}
+                  value={user.role}
+                  onChange={(e) =>
+                    setPendingUserRole({
+                      user,
+                      nextRole: e.target.value as "admin" | "user",
+                    })
+                  }
+                >
+                  <option value="admin">admin</option>
+                  <option value="user">user</option>
+                </select>
+              </div>
+            ))
+          ) : type === "categories" ? (
+            categories.map((c) => (
+              <div className="tr" key={c.id}>
+                <div>
+                  <b>{c.name}</b>
+                  <small>{c.description || c.slug}</small>
+                </div>
+                <span className="status published">
+                  {c.articles_count ?? 0} artikel
+                </span>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingCategory(c);
+                      setEditingTag(null);
+                      setCreateName(c.name);
+                      setCreateDesc(c.description || "");
+                      setShowCreateModal(true);
+                    }}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "var(--pink)",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteCategory(c)}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "#f472b6",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            ))
+          ) : (
+            tags.map((t) => (
+              <div className="tr" key={t.id}>
+                <div>
+                  <b>#{t.name}</b>
+                  <small>{t.slug}</small>
+                </div>
+                <span className="status published">
+                  {t.articles_count ?? 0} artikel
+                </span>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "12px",
+                    justifyContent: "flex-end",
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingTag(t);
+                      setEditingCategory(null);
+                      setCreateName(t.name);
+                      setCreateDesc("");
+                      setShowCreateModal(true);
+                    }}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "var(--pink)",
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteTag(t)}
+                    style={{
+                      border: 0,
+                      background: "none",
+                      color: "#f472b6",
+                      fontSize: "11px",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      padding: 0,
+                    }}
+                  >
+                    Hapus
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+
+      {/* Modal Ubah Role Pengguna */}
+      {pendingUserRole && (
+        <div className="modal-bg">
+          <div className="confirm-dialog" role="dialog" aria-modal="true">
+            <span>!</span>
+            <h2>Ubah role pengguna?</h2>
+            <p>
+              Ubah role {pendingUserRole.user.name} menjadi{" "}
+              <b>{pendingUserRole.nextRole}</b>?
+            </p>
+            <div>
+              <button
+                className="secondary"
+                onClick={() => setPendingUserRole(null)}
+              >
+                Batal
+              </button>
+              <button className="primary" onClick={confirmChangeRole}>
+                Ubah role
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Hapus Artikel */}
+      {deletingArticle && (
+        <div className="modal-bg">
+          <div className="confirm-dialog" role="dialog" aria-modal="true">
+            <span>!</span>
+            <h2>Hapus artikel?</h2>
+            <p>
+              Apakah Anda yakin ingin menghapus artikel &ldquo;
+              {deletingArticle.title}&rdquo;? Tindakan ini tidak dapat dibatalkan.
+            </p>
+            {deleteError && (
+              <div
+                style={{
+                  marginTop: "14px",
+                  padding: "10px 14px",
+                  borderRadius: "8px",
+                  background: "rgba(244, 114, 182, 0.12)",
+                  border: "1px solid rgba(244, 114, 182, 0.25)",
+                  color: "var(--pink)",
+                  fontSize: "12px",
+                }}
+                role="alert"
+              >
+                {deleteError}
+              </div>
+            )}
+            <div>
+              <button
+                type="button"
+                className="secondary"
+                disabled={deleteLoading}
+                onClick={() => {
+                  setDeletingArticle(null);
+                  setDeleteError(null);
+                }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="danger"
+                disabled={deleteLoading}
+                onClick={confirmDeleteArticle}
+              >
+                {deleteLoading ? "Menghapus..." : "Hapus"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Tambah / Edit Kategori / Tag */}
+      {showCreateModal && (
+        <div
+          className="modal-bg"
+          onMouseDown={() => {
+            setShowCreateModal(false);
+            setEditingCategory(null);
+            setEditingTag(null);
+            setCreateName("");
+            setCreateDesc("");
+          }}
+        >
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            onMouseDown={(e) => e.stopPropagation()}
+            style={{ maxWidth: "420px", textAlign: "left" }}
+          >
+            <h2>
+              {editingCategory || editingTag
+                ? `Edit ${labels[type]}`
+                : `Tambah ${labels[type]} Baru`}
+            </h2>
+            <div style={{ marginTop: "14px", display: "grid", gap: "10px" }}>
+              <label style={{ fontSize: "12px", display: "grid", gap: "4px" }}>
+                Nama {labels[type]}
+                <input
+                  autoFocus
+                  value={createName}
+                  onChange={(e) => setCreateName(e.target.value)}
+                  placeholder={`Contoh: ${type === "categories" ? "DevOps" : "CI/CD"}`}
+                  style={{
+                    padding: "8px 12px",
+                    borderRadius: "8px",
+                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                  }}
+                />
+              </label>
+
+              {type === "categories" && (
+                <label style={{ fontSize: "12px", display: "grid", gap: "4px" }}>
+                  Deskripsi
+                  <textarea
+                    value={createDesc}
+                    onChange={(e) => setCreateDesc(e.target.value)}
+                    placeholder="Deskripsi singkat kategori..."
+                    style={{
+                      padding: "8px 12px",
+                      borderRadius: "8px",
+                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      minHeight: "70px",
+                    }}
+                  />
+                </label>
+              )}
+            </div>
+
+            <div style={{ marginTop: "16px", display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => {
+                  setShowCreateModal(false);
+                  setEditingCategory(null);
+                  setEditingTag(null);
+                  setCreateName("");
+                  setCreateDesc("");
+                }}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={handleSaveCategoryOrTag}
+              >
+                Simpan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
  * Halaman Landing Page Publik WikiFlow
  */
 function Landing() {
+  const [popularArticles, setPopularArticles] = useState<FormattedArticle[]>([]);
+
+  useEffect(() => {
+    getPopularArticlesApi(3)
+      .then((res) => {
+        setPopularArticles((res.data || []).map(formatArticle));
+      })
+      .catch(() => {});
+  }, []);
+
   const featureList = [
     [
       "edit",
@@ -1791,7 +2338,7 @@ function Landing() {
       <main>
         <section className="landing-hero">
           <div className="switch-pill">
-            <span>What's new?</span>
+            <span>What&apos;s new?</span>
             <a href="#features">Explore Features</a>
           </div>
 
@@ -1829,8 +2376,8 @@ function Landing() {
                 ["tag", "Tag", "/tags"],
                 ["clock", "Terbaru", "/articles?sort=latest"],
                 ["fire", "Populer", "/articles?sort=popular"],
-              ].map(([icon, label, path]) => (
-                <button key={label} onClick={() => go(path)}>
+              ].map(([icon, label, targetPath]) => (
+                <button key={label} onClick={() => go(targetPath)}>
                   <i>
                     <Icon name={icon} />
                   </i>
@@ -1863,7 +2410,7 @@ function Landing() {
               <Icon name="folder" />
               <small>KATEGORI AKTIF</small>
               <strong>24</strong>
-              <span>36 artikel diterbitkan</span>
+              <span>Dokumentasi tim</span>
             </div>
 
             <div className="publish-card">
@@ -1887,12 +2434,12 @@ function Landing() {
             <p>Dari ide singkat hingga dokumentasi teknis yang terstruktur.</p>
           </div>
           <div className="feature-grid">
-            {featureList.map(([icon, title, desc]) => (
-              <article key={title}>
+            {featureList.map(([icon, featTitle, desc]) => (
+              <article key={featTitle}>
                 <i>
                   <Icon name={icon} />
                 </i>
-                <h3>{title}</h3>
+                <h3>{featTitle}</h3>
                 <p>{desc}</p>
               </article>
             ))}
@@ -1913,10 +2460,10 @@ function Landing() {
                 "Bagikan pengetahuan",
                 "Admin menerbitkan panduan yang tervalidasi.",
               ],
-            ].map(([step, title, desc]) => (
+            ].map(([step, stepTitle, desc]) => (
               <article key={step}>
                 <b>{step}</b>
-                <h3>{title}</h3>
+                <h3>{stepTitle}</h3>
                 <p>{desc}</p>
               </article>
             ))}
@@ -1929,8 +2476,8 @@ function Landing() {
             <h2>Pengetahuan yang menggerakkan tim.</h2>
           </div>
           <div className="preview-grid">
-            {articles.slice(0, 3).map((a) => (
-              <article key={a.id}>
+            {popularArticles.map((a) => (
+              <article key={a.id} onClick={() => go(`/articles/${a.slug}`)} style={{ cursor: "pointer" }}>
                 <span>{a.category}</span>
                 <h3>{a.title}</h3>
                 <p>{a.summary}</p>
@@ -1939,6 +2486,14 @@ function Landing() {
                 </footer>
               </article>
             ))}
+            {popularArticles.length === 0 && (
+              <article>
+                <span>Dokumentasi</span>
+                <h3>Panduan WikiFlow</h3>
+                <p>Jelajahi panduan pengembangan dan arsitektur WikiFlow.</p>
+                <footer>Mulai baca →</footer>
+              </article>
+            )}
           </div>
         </section>
 
@@ -1968,7 +2523,6 @@ function Landing() {
         </section>
       </main>
 
-      {/* Footer tanpa ganti tema (karena sudah ada di header atas) */}
       <footer className="landing-footer" id="contact">
         <Brand />
         <p>Dibuat oleh tim PKL · WikiFlow 2026</p>
@@ -1979,17 +2533,21 @@ function Landing() {
 
 /**
  * Halaman Login Pengguna
- * Penataan tombol kembali dan toggle tema terstruktur rapi di atas kartu login (tidak menumpuk)
+ * Menghubungkan secara eksklusif ke Laravel Sanctum API (Tanpa mock fallback)
  */
-function Login({ onLogin }: { onLogin: (role: "Admin" | "User") => void }) {
+function Login({
+  onLogin,
+}: {
+  onLogin: (user: ApiUser, role: "Admin" | "User") => void;
+}) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const fill = (role: "Admin" | "User") => {
+  const fill = (targetRole: "Admin" | "User") => {
     setEmail(
-      role === "Admin" ? "admin@wikiflow.test" : "user@wikiflow.test"
+      targetRole === "Admin" ? "admin@wikiflow.test" : "user@wikiflow.test"
     );
     setPassword("password");
     setError("");
@@ -1998,70 +2556,82 @@ function Login({ onLogin }: { onLogin: (role: "Admin" | "User") => void }) {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+
+    if (!email.trim() || !password) {
+      setError("Email dan password wajib diisi.");
+      return;
+    }
+
     setLoading(true);
 
     try {
-      const rawBase =
-        process.env.NEXT_PUBLIC_API_URL || "http://127.0.0.1:8000/api";
-      const apiBase = rawBase
-        .replace("localhost", "127.0.0.1")
-        .replace(/\/$/, "");
+      const res = await loginApi(email.trim(), password);
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 6000);
+      if (res.token && res.user) {
+        localStorage.setItem("wikiflow-token", res.token);
+        const resolvedRole: "Admin" | "User" =
+          res.user.role?.toLowerCase() === "admin" ? "Admin" : "User";
+        localStorage.setItem("wikiflow-role", resolvedRole);
 
-      const res = await fetch(`${apiBase}/auth/login`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({ email, password }),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timer);
-      const data = await res.json().catch(() => null);
-
-      if (res.ok && data?.token) {
-        localStorage.setItem("wikiflow-token", data.token);
-        const resolvedRole =
-          data.user?.role?.toLowerCase() === "admin" ? "Admin" : "User";
-        onLogin(resolvedRole);
+        onLogin(res.user, resolvedRole);
         go("/app", true);
         return;
       }
 
-      if (data?.message) {
-        setError(data.message);
-        setLoading(false);
-        return;
-      }
-    } catch {
-      // Backend mungkin tidak terjangkau atau timeout, fallback ke autentikasi mock
-    }
-
-    const role =
-      email.toLowerCase() === "admin@wikiflow.test"
-        ? "Admin"
-        : email.toLowerCase() === "user@wikiflow.test"
-          ? "User"
-          : null;
-
-    if (!role || password !== "password") {
-      setError("Email atau password salah");
+      setError(res.message || "Login gagal.");
+    } catch (err: unknown) {
+      const apiErr = err as { message?: string; errors?: Record<string, string[]> };
+      const validationMsgs = apiErr.errors
+        ? Object.values(apiErr.errors).flat().join(" ")
+        : null;
+      setError(
+        validationMsgs ||
+          apiErr.message ||
+          "Gagal masuk. Periksa kembali email dan password Anda."
+      );
+    } finally {
       setLoading(false);
-      return;
     }
-
-    onLogin(role);
-    go("/app", true);
   };
 
   return (
     <div className="login">
       <section className="login-story">
         <Brand />
+        <svg
+          className="flow-ribbons"
+          viewBox="0 0 620 260"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path
+            className="flow-pink"
+            d="M38 90C160 20 242 168 374 91S543 28 610 71"
+          />
+          <path
+            className="flow-green"
+            d="M14 146c118-70 225 78 342 13s172-87 254-35"
+          />
+          <circle className="node-pink" cx="38" cy="90" r="5" />
+          <circle className="node-pink" cx="610" cy="71" r="5" />
+          <circle className="node-green" cx="14" cy="146" r="5" />
+          <circle className="node-green" cx="610" cy="124" r="5" />
+        </svg>
+
+        <svg
+          className="knowledge-cluster"
+          viewBox="0 0 170 120"
+          fill="none"
+          aria-hidden="true"
+        >
+          <path d="m20 77 44-42 47 33 39-45M64 35l14 65m33-32 39 28" />
+          <circle cx="20" cy="77" r="6" />
+          <circle cx="64" cy="35" r="7" />
+          <circle cx="78" cy="100" r="5" />
+          <circle cx="111" cy="68" r="7" />
+          <circle cx="150" cy="23" r="5" />
+          <circle cx="150" cy="96" r="6" />
+        </svg>
 
         <div className="login-copy">
           <span>INTERNAL KNOWLEDGE BASE</span>
@@ -2181,11 +2751,24 @@ function Login({ onLogin }: { onLogin: (role: "Admin" | "User") => void }) {
  */
 function ProfilePage({
   role,
+  user,
   logout,
 }: {
   role: "Admin" | "User";
+  user: ApiUser | null;
   logout: () => void;
 }) {
+  const initials = user?.name
+    ? user.name
+        .split(" ")
+        .map((x) => x[0])
+        .slice(0, 2)
+        .join("")
+        .toUpperCase()
+    : role === "Admin"
+      ? "AD"
+      : "US";
+
   return (
     <div className="profile-page">
       <div className="page-head">
@@ -2197,14 +2780,10 @@ function ProfilePage({
       </div>
 
       <div className="profile-card">
-        <span className="avatar">{role === "Admin" ? "RP" : "US"}</span>
+        <span className="avatar">{initials}</span>
         <div>
-          <h2>{role === "Admin" ? "Raka Putra" : "WikiFlow User"}</h2>
-          <p>
-            {role === "Admin"
-              ? "admin@wikiflow.test"
-              : "user@wikiflow.test"}
-          </p>
+          <h2>{user?.name || (role === "Admin" ? "Administrator" : "User WikiFlow")}</h2>
+          <p>{user?.email || (role === "Admin" ? "admin@wikiflow.test" : "user@wikiflow.test")}</p>
           <span className={`role-badge ${role.toLowerCase()}`}>{role}</span>
         </div>
         <ThemeToggle />
@@ -2256,19 +2835,19 @@ function EmptyPage({ title, text }: { title: string; text: string }) {
  * Komponen Induk Aplikasi WikiFlow
  */
 export default function App() {
-  const [routeKey, setRouteKey] = useState(
-    location.pathname + location.search
+  const [routeKey, setRouteKey] = useState(() =>
+    typeof window !== "undefined" ? location.pathname + location.search : ""
   );
   const [search, setSearch] = useState(false);
   const [drawer, setDrawer] = useState(false);
-  const [role, setRole] = useState<"Admin" | "User" | null>(() => {
-    const saved = localStorage.getItem("wikiflow-role");
-    return saved === "Admin" || saved === "User" ? saved : null;
+  const [user, setUser] = useState<ApiUser | null>(null);
+  const [role, setRole] = useState<"Admin" | "User" | null>(null);
+  const [sessionChecking, setSessionChecking] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return Boolean(localStorage.getItem("wikiflow-token"));
   });
 
-  const path = location.pathname;
-  const activeRole = role || "User";
-
+  // Inisialisasi rute dan session
   useEffect(() => {
     if (history.state?.idx === undefined) {
       history.replaceState({ ...(history.state || {}), idx: 0 }, "");
@@ -2287,41 +2866,81 @@ export default function App() {
     addEventListener("popstate", pop);
     addEventListener("keydown", handleKey);
 
+    // Verifikasi sesi login aktif ke backend Laravel API
+    const token = localStorage.getItem("wikiflow-token");
+    if (token) {
+      getCurrentUser(token)
+        .then((res) => {
+          if (res?.user) {
+            setUser(res.user);
+            const resolvedRole =
+              res.user.role?.toLowerCase() === "admin" ? "Admin" : "User";
+            setRole(resolvedRole);
+            localStorage.setItem("wikiflow-role", resolvedRole);
+          }
+        })
+        .catch(() => {
+          // Token tidak valid atau kedaluwarsa (401)
+          localStorage.removeItem("wikiflow-token");
+          localStorage.removeItem("wikiflow-role");
+          setUser(null);
+          setRole(null);
+        })
+        .finally(() => {
+          setSessionChecking(false);
+        });
+    }
+
     return () => {
       removeEventListener("popstate", pop);
       removeEventListener("keydown", handleKey);
     };
   }, []);
 
+  const path = typeof window !== "undefined" ? location.pathname : "/";
+  const activeRole = role || "User";
+
+  // Redirect alias /latest dan /popular
   useEffect(() => {
     if (path === "/latest") go("/articles?sort=latest", true);
     if (path === "/popular") go("/articles?sort=popular", true);
-  }, [routeKey]);
+  }, [routeKey, path]);
 
+  // Hak akses Admin
   useEffect(() => {
     if (role === "User" && path.startsWith("/admin")) {
       go("/403", true);
     }
-  }, [role, routeKey]);
+  }, [role, routeKey, path]);
 
-  const logout = () => {
-    localStorage.removeItem("wikiflow-role");
-    localStorage.removeItem("wikiflow-token");
-    localStorage.removeItem("token");
-    setRole(null);
-    go("/login", true);
+  const logout = async () => {
+    const token = localStorage.getItem("wikiflow-token");
+    try {
+      if (token) {
+        await logoutApi(token);
+      }
+    } catch {
+      // ignore
+    } finally {
+      localStorage.removeItem("wikiflow-role");
+      localStorage.removeItem("wikiflow-token");
+      setUser(null);
+      setRole(null);
+      go("/login", true);
+    }
   };
 
-  const login = (nextRole: "Admin" | "User") => {
-    localStorage.setItem("wikiflow-role", nextRole);
-    setRole(nextRole);
+  const loginSuccess = (newUser: ApiUser, newRole: "Admin" | "User") => {
+    setUser(newUser);
+    setRole(newRole);
   };
 
   const pageContent = useMemo(() => {
+    void routeKey;
     if (role === "User" && path.startsWith("/admin")) {
       return <ForbiddenPage />;
     }
-    if (path === "/app") return <Dashboard role={activeRole} />;
+    if (path === "/app") return <Dashboard role={activeRole} user={user} />;
     if (path === "/articles" || path === "/search") {
       return <ArticlesPage role={activeRole} />;
     }
@@ -2329,7 +2948,7 @@ export default function App() {
     if (path === "/tags") return <CategoriesPage tagsPage />;
     if (path === "/403") return <ForbiddenPage />;
     if (path === "/profile") {
-      return <ProfilePage role={activeRole} logout={logout} />;
+      return <ProfilePage role={activeRole} user={user} logout={logout} />;
     }
     if (path.startsWith("/articles/")) return <ArticleDetail />;
     if (
@@ -2351,11 +2970,21 @@ export default function App() {
         text="Alamat yang Anda buka tidak tersedia."
       />
     );
-  }, [routeKey, role]);
+  }, [routeKey, role, path, activeRole, user]);
+
+  if (sessionChecking) {
+    return (
+      <div className="empty-page" style={{ minHeight: "100vh" }}>
+        <span>✦</span>
+        <h1>WikiFlow</h1>
+        <p>Memuat workspace...</p>
+      </div>
+    );
+  }
 
   if (path === "/") return <Landing />;
-  if (path === "/login") return <Login onLogin={login} />;
-  if (!role) return <Login onLogin={login} />;
+  if (path === "/login") return <Login onLogin={loginSuccess} />;
+  if (!role) return <Login onLogin={loginSuccess} />;
 
   const fallback = path.startsWith("/articles/")
     ? "/articles"
@@ -2376,10 +3005,11 @@ export default function App() {
 
   return (
     <div className="app">
-      <Sidebar role={role} logout={logout} />
+      <Sidebar role={role} user={user} logout={logout} />
       <div className="app-body">
         <Topbar
           role={role}
+          user={user}
           openMenu={() => setDrawer(true)}
           openSearch={() => setSearch(true)}
         />
@@ -2399,6 +3029,7 @@ export default function App() {
           <div onClick={() => setDrawer(false)} />
           <Sidebar
             role={role}
+            user={user}
             logout={logout}
             close={() => setDrawer(false)}
           />

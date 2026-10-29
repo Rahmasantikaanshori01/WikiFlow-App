@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\ArticleController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\TagController;
+use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
 
 // =====================================================
@@ -38,14 +39,21 @@ Route::get('/tags/{tag}', [TagController::class, 'show']);
 // ARTIKEL PUBLIK
 // =====================================================
 
+Route::get('/articles/popular', [ArticleController::class, 'popular']);
 Route::get('/articles', [ArticleController::class, 'index']);
 Route::get('/articles/{slug}', [ArticleController::class, 'show']);
+Route::post('/articles/{slug}/view', [ArticleController::class, 'recordView']);
 
 // =====================================================
 // PENGELOLAAN KHUSUS ADMIN
 // =====================================================
 
 Route::middleware(['auth:sanctum', 'admin'])->group(function () {
+    // Pengelolaan Pengguna
+    Route::get('/admin/users', [UserController::class, 'index']);
+    Route::put('/admin/users/{user}/role', [UserController::class, 'updateRole']);
+    Route::patch('/admin/users/{user}/role', [UserController::class, 'updateRole']);
+
     // Kategori
     Route::post('/categories', [CategoryController::class, 'store']);
     Route::put('/categories/{category}', [CategoryController::class, 'update']);

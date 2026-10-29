@@ -20,12 +20,14 @@ class Article extends Model
         'excerpt',
         'status',
         'published_at',
+        'views',
     ];
 
     protected function casts(): array
     {
         return [
             'published_at' => 'datetime',
+            'views' => 'integer',
         ];
     }
 

@@ -13,8 +13,10 @@ use Illuminate\Validation\Rule;
 class ArticleController extends Controller
 {
     /**
-     * Menampilkan daftar artikel yang dipublikasikan.
-     * Admin yang login juga dapat melihat artikel draft.
+     * Menampilkan daftar artikel.
+     * Pengunjung umum hanya dapat melihat artikel yang berstatus 'published'.
+     * Admin dapat melihat artikel berstatus 'draft' maupun 'published'.
+     * Mendukung pencarian, filter kategori/tag, sorting (latest, popular, oldest), dan paginasi.
      */
     public function index(Request $request): JsonResponse
     {
@@ -24,38 +26,72 @@ class ArticleController extends Controller
             'tags:id,name,slug',
         ]);
 
-        $user = $request->user();
+        $user = $request->user('sanctum') ?? $request->user();
 
+        // Hak akses status artikel: Publik/User biasa hanya melihat yang 'published'
         if (!$user || $user->role !== 'admin') {
             $query->where('status', 'published');
+        } elseif ($request->filled('status')) {
+            $query->where('status', $request->input('status'));
         }
 
+        // Pencarian pada judul, ringkasan, atau isi artikel
         if ($request->filled('search')) {
             $keyword = $request->input('search');
 
             $query->where(function ($q) use ($keyword) {
                 $q->where('title', 'like', "%{$keyword}%")
-                    ->orWhere('content', 'like', "%{$keyword}%")
-                    ->orWhere('excerpt', 'like', "%{$keyword}%");
+                    ->orWhere('excerpt', 'like', "%{$keyword}%")
+                    ->orWhere('content', 'like', "%{$keyword}%");
             });
         }
 
+        // Filter berdasarkan kategori (ID, slug, atau nama)
         if ($request->filled('category_id')) {
             $query->where('category_id', $request->integer('category_id'));
+        } elseif ($request->filled('category')) {
+            $cat = $request->input('category');
+            if ($cat !== 'Semua kategori') {
+                $query->whereHas('category', function ($q) use ($cat) {
+                    $q->where('slug', Str::slug($cat))
+                        ->orWhere('name', $cat);
+                });
+            }
         }
 
+        // Filter berdasarkan tag (ID, slug, atau nama)
         if ($request->filled('tag_id')) {
             $tagId = $request->integer('tag_id');
-
             $query->whereHas('tags', function ($q) use ($tagId) {
                 $q->where('tags.id', $tagId);
             });
+        } elseif ($request->filled('tag')) {
+            $tagName = $request->input('tag');
+            if ($tagName !== 'Semua tag') {
+                $query->whereHas('tags', function ($q) use ($tagName) {
+                    $q->where('slug', Str::slug($tagName))
+                        ->orWhere('name', $tagName);
+                });
+            }
         }
 
-        $articles = $query
-            ->orderByDesc('published_at')
-            ->orderByDesc('created_at')
-            ->paginate(10);
+        // Pengurutan (sorting)
+        $sort = $request->input('sort', 'latest');
+        if ($sort === 'popular') {
+            $query->orderByDesc('views')
+                ->orderByDesc('published_at')
+                ->orderByDesc('id');
+        } elseif ($sort === 'oldest') {
+            $query->orderBy('published_at')
+                ->orderBy('id');
+        } else {
+            // Default latest
+            $query->orderByDesc('published_at')
+                ->orderByDesc('id');
+        }
+
+        $perPage = min(max(1, $request->integer('per_page', 10)), 100);
+        $articles = $query->paginate($perPage);
 
         return response()->json([
             'message' => 'Daftar artikel berhasil diambil.',
@@ -64,8 +100,33 @@ class ArticleController extends Controller
     }
 
     /**
+     * Mengambil artikel terpopuler yang telah dipublikasikan.
+     * Mengurutkan berdasarkan views terbanyak dengan fallback ke tanggal publikasi terbaru.
+     */
+    public function popular(Request $request): JsonResponse
+    {
+        $limit = min(max(1, $request->integer('limit', 5)), 20);
+
+        $articles = Article::with([
+            'user:id,name,email',
+            'category:id,name,slug',
+            'tags:id,name,slug',
+        ])
+            ->where('status', 'published')
+            ->orderByDesc('views')
+            ->orderByDesc('published_at')
+            ->limit($limit)
+            ->get();
+
+        return response()->json([
+            'message' => 'Daftar artikel populer berhasil diambil.',
+            'data' => $articles,
+        ]);
+    }
+
+    /**
      * Membuat artikel baru.
-     * Hanya admin yang boleh mengakses endpoint ini.
+     * Hanya admin yang berwenang.
      */
     public function store(Request $request): JsonResponse
     {
@@ -101,6 +162,7 @@ class ArticleController extends Controller
             $article->content = $validated['content'];
             $article->excerpt = $validated['excerpt'] ?? null;
             $article->status = $validated['status'];
+            $article->views = 0;
             $article->published_at = $validated['status'] === 'published'
                 ? now()
                 : null;
@@ -126,6 +188,7 @@ class ArticleController extends Controller
 
     /**
      * Menampilkan detail artikel berdasarkan slug.
+     * Draft hanya dapat diakses oleh admin; publik menerima respon 404.
      */
     public function show(Request $request, string $slug): JsonResponse
     {
@@ -133,9 +196,18 @@ class ArticleController extends Controller
             'user:id,name,email',
             'category:id,name,slug',
             'tags:id,name,slug',
-        ])->where('slug', $slug);
+        ]);
 
-        $user = $request->user();
+        if (is_numeric($slug)) {
+            $query->where(function ($q) use ($slug) {
+                $q->where('id', (int) $slug)
+                    ->orWhere('slug', $slug);
+            });
+        } else {
+            $query->where('slug', $slug);
+        }
+
+        $user = $request->user('sanctum') ?? $request->user();
 
         if (!$user || $user->role !== 'admin') {
             $query->where('status', 'published');
@@ -156,8 +228,32 @@ class ArticleController extends Controller
     }
 
     /**
-     * Memperbarui artikel.
-     * Hanya admin yang boleh mengakses endpoint ini.
+     * Mencatat tayangan artikel yang dipublikasikan secara persisten ke MySQL.
+     * Mencegah peningkatan tayangan pada artikel yang berstatus draft atau tidak ada.
+     */
+    public function recordView(Request $request, string $slug): JsonResponse
+    {
+        $article = Article::where('slug', $slug)
+            ->where('status', 'published')
+            ->first();
+
+        if (!$article) {
+            return response()->json([
+                'message' => 'Artikel tidak ditemukan atau belum dipublikasikan.',
+            ], 404);
+        }
+
+        $article->increment('views');
+
+        return response()->json([
+            'message' => 'Tayangan artikel berhasil dicatat.',
+            'views' => $article->views,
+        ]);
+    }
+
+    /**
+     * Memperbarui artikel yang ada.
+     * Hanya admin yang berwenang.
      */
     public function update(Request $request, int $id): JsonResponse
     {
@@ -249,7 +345,7 @@ class ArticleController extends Controller
 
     /**
      * Menghapus artikel.
-     * Hanya admin yang boleh mengakses endpoint ini.
+     * Hanya admin yang berwenang.
      */
     public function destroy(int $id): JsonResponse
     {
@@ -261,6 +357,7 @@ class ArticleController extends Controller
             ], 404);
         }
 
+        $article->tags()->detach();
         $article->delete();
 
         return response()->json([
@@ -269,7 +366,7 @@ class ArticleController extends Controller
     }
 
     /**
-     * Membuat slug unik.
+     * Membuat slug unik yang aman dari benturan nama (collision-safe).
      */
     private function generateUniqueSlug(
         string $title,
