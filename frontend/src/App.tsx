@@ -117,6 +117,14 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
         <circle cx="12" cy="12" r="2.5" />
       </>
     ),
+    eyeOff: (
+      <>
+        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94" />
+        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19" />
+        <path d="M14.12 14.12a3 3 0 1 1-4.24-4.24" />
+        <line x1="1" y1="1" x2="23" y2="23" />
+      </>
+    ),
     logout: (
       <>
         <path d="M10 17l5-5-5-5M15 12H3M15 4h5v16h-5" />
@@ -281,11 +289,11 @@ function Sidebar({
 
   const initials = user?.name
     ? user.name
-        .split(" ")
-        .map((w) => w[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((w) => w[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : role === "Admin"
       ? "AD"
       : "US";
@@ -465,11 +473,11 @@ function Topbar({
 
   const initials = user?.name
     ? user.name
-        .split(" ")
-        .map((w) => w[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((w) => w[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : role === "Admin"
       ? "AD"
       : "US";
@@ -524,11 +532,11 @@ function ArticleCard({
 }) {
   const authorInitials = a.author
     ? a.author
-        .split(" ")
-        .map((x) => x[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((x) => x[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : "WF";
 
   return (
@@ -1122,7 +1130,7 @@ function ArticleDetail() {
                 prev ? { ...prev, views: viewRes.views } : prev
               );
             }
-          }).catch(() => {});
+          }).catch(() => { });
         }
       } catch {
         if (isMounted) setNotFound(true);
@@ -1153,11 +1161,11 @@ function ArticleDetail() {
 
   const authorInitials = article.author
     ? article.author
-        .split(" ")
-        .map((x) => x[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((x) => x[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : "WF";
 
   return (
@@ -2297,7 +2305,7 @@ function Landing() {
       .then((res) => {
         setPopularArticles((res.data || []).map(formatArticle));
       })
-      .catch(() => {});
+      .catch(() => { });
   }, []);
 
   const featureList = [
@@ -2476,25 +2484,52 @@ function Landing() {
             <h2>Pengetahuan yang menggerakkan tim.</h2>
           </div>
           <div className="preview-grid">
-            {popularArticles.map((a) => (
-              <article key={a.id} onClick={() => go(`/articles/${a.slug}`)} style={{ cursor: "pointer" }}>
-                <span>{a.category}</span>
-                <h3>{a.title}</h3>
-                <p>{a.summary}</p>
+            {[
+              {
+                category: "Engineering",
+                title: "Panduan Setup Development Environment",
+                summary:
+                  "Konfigurasi environment lokal yang konsisten untuk seluruh tim engineering.",
+                read: "8 mnt",
+                color: "engineering",
+              },
+              {
+                category: "Workflow",
+                title: "Standar Git Workflow untuk Tim Scrum",
+                summary:
+                  "Branching strategy, conventional commits, dan proses pull request yang efektif.",
+                read: "6 mnt",
+                color: "workflow",
+              },
+              {
+                category: "Backend",
+                title: "Integrasi API Authentication dengan JWT",
+                summary:
+                  "Implementasi access token dan refresh token yang aman pada aplikasi internal.",
+                read: "12 mnt",
+                color: "backend",
+              },
+            ].map((article) => (
+              <article
+                key={article.category}
+                className={`preview-card preview-card--${article.color}`}
+              >
+                <span className="preview-category">{article.category}</span>
+
+                <h3>{article.title}</h3>
+
+                <p>{article.summary}</p>
+
                 <footer>
-                  {a.read} baca <Icon name="arrow" />
+                  <span>{article.read} baca</span>
+                  <span className="preview-arrow">
+                    <Icon name="arrow" />
+                  </span>
                 </footer>
               </article>
             ))}
-            {popularArticles.length === 0 && (
-              <article>
-                <span>Dokumentasi</span>
-                <h3>Panduan WikiFlow</h3>
-                <p>Jelajahi panduan pengembangan dan arsitektur WikiFlow.</p>
-                <footer>Mulai baca →</footer>
-              </article>
-            )}
           </div>
+
         </section>
 
         <section className="final-cta cta-split">
@@ -2542,6 +2577,7 @@ function Login({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -2586,8 +2622,8 @@ function Login({
         : null;
       setError(
         validationMsgs ||
-          apiErr.message ||
-          "Gagal masuk. Periksa kembali email dan password Anda."
+        apiErr.message ||
+        "Gagal masuk. Periksa kembali email dan password Anda."
       );
     } finally {
       setLoading(false);
@@ -2694,14 +2730,24 @@ function Login({
 
             <label>
               Password
-              <input
-                required
-                autoComplete="current-password"
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Masukkan password"
-              />
+              <div className="password-field">
+                <input
+                  required
+                  autoComplete="current-password"
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Masukkan password"
+                />
+                <button
+                  type="button"
+                  className="password-toggle"
+                  onClick={() => setShowPassword(!showPassword)}
+                  aria-label={showPassword ? "Sembunyikan password" : "Tampilkan password"}
+                >
+                  <Icon name={showPassword ? "eyeOff" : "eye"} size={16} />
+                </button>
+              </div>
             </label>
 
             <div className="remember">
@@ -2760,11 +2806,11 @@ function ProfilePage({
 }) {
   const initials = user?.name
     ? user.name
-        .split(" ")
-        .map((x) => x[0])
-        .slice(0, 2)
-        .join("")
-        .toUpperCase()
+      .split(" ")
+      .map((x) => x[0])
+      .slice(0, 2)
+      .join("")
+      .toUpperCase()
     : role === "Admin"
       ? "AD"
       : "US";
