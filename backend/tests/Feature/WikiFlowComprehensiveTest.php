@@ -672,4 +672,132 @@ class WikiFlowComprehensiveTest extends TestCase
         // Pastikan konten tersimpan persis apa adanya sebagai teks mentah (tidak dieksekusi oleh backend)
         $this->assertStringContainsString("<script>alert('XSS')</script>", $content);
     }
+
+    // 29. Search by category name (partial match & case-insensitive)
+    public function test_29_search_by_category_partial_and_case_insensitive(): void
+    {
+        $admin = $this->createAdmin();
+        $cat = $this->createCategory('Backend Architecture', 'backend-architecture');
+        $adminToken = $admin->createToken('test')->plainTextToken;
+
+        $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->postJson('/api/articles', [
+                'title' => 'Microservices Pattern',
+                'content' => 'Arsitektur layanan terdistribusi.',
+                'category_id' => $cat->id,
+                'status' => 'published',
+            ]);
+
+        // Cari dengan kata kunci sebagian kategori "backend" (huruf kecil)
+        $res = $this->getJson('/api/articles?search=backend');
+        $res->assertStatus(200)
+            ->assertJsonCount(1, 'data.data')
+            ->assertJsonPath('data.data.0.title', 'Microservices Pattern');
+    }
+
+    // 30. Search by tag name (partial match & case-insensitive)
+    public function test_30_search_by_tag_partial_and_case_insensitive(): void
+    {
+        $admin = $this->createAdmin();
+        $cat = $this->createCategory();
+        $tag = $this->createTag('DockerContainer', 'docker-container');
+        $adminToken = $admin->createToken('test')->plainTextToken;
+
+        $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->postJson('/api/articles', [
+                'title' => 'Panduan Kontainerisasi',
+                'content' => 'Isi panduan kontainer.',
+                'category_id' => $cat->id,
+                'tag_ids' => [$tag->id],
+                'status' => 'published',
+            ]);
+
+        // Cari dengan kata kunci sebagian nama tag "docker" (huruf kecil)
+        $res = $this->getJson('/api/articles?search=docker');
+        $res->assertStatus(200)
+            ->assertJsonCount(1, 'data.data')
+            ->assertJsonPath('data.data.0.title', 'Panduan Kontainerisasi');
+    }
+
+    // 31. Combined search and category filters (e.g. title contains "JWT" + category "Backend")
+    public function test_31_search_combined_title_and_category_filters(): void
+    {
+        $admin = $this->createAdmin();
+        $catBackend = $this->createCategory('Backend', 'backend');
+        $catFrontend = $this->createCategory('Frontend', 'frontend');
+        $adminToken = $admin->createToken('test')->plainTextToken;
+
+        // Artikel 1: Judul JWT + Kategori Backend (Harus COCOK)
+        $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->postJson('/api/articles', [
+                'title' => 'Integrasi API Authentication dengan JWT',
+                'content' => 'Implementasi access token JWT di server.',
+                'category_id' => $catBackend->id,
+                'status' => 'published',
+            ]);
+
+        // Artikel 2: Judul JWT + Kategori Frontend (TIDAK COCOK dengan filter kategori Backend)
+        $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->postJson('/api/articles', [
+                'title' => 'Handling JWT di LocalStorage Frontend',
+                'content' => 'Penyimpanan token JWT di browser.',
+                'category_id' => $catFrontend->id,
+                'status' => 'published',
+            ]);
+
+        // Artikel 3: Judul Non-JWT + Kategori Backend (TIDAK COCOK dengan query JWT)
+        $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->postJson('/api/articles', [
+                'title' => 'Optimasi Query Database MySQL',
+                'content' => 'Indexing dan query optimization.',
+                'category_id' => $catBackend->id,
+                'status' => 'published',
+            ]);
+
+        // Query: judul mengandung "jwt" (case-insensitive) + filter category "Backend"
+        $res = $this->getJson('/api/articles?search=jwt&category=Backend');
+        $res->assertStatus(200)
+            ->assertJsonCount(1, 'data.data')
+            ->assertJsonPath('data.data.0.title', 'Integrasi API Authentication dengan JWT')
+            ->assertJsonPath('data.data.0.category.name', 'Backend');
+    }
+
+    // 32. Fixed timestamp: published_at does not change after article is published and updated
+    public function test_32_article_timestamp_remains_fixed_after_update(): void
+    {
+        $admin = $this->createAdmin();
+        $cat = $this->createCategory();
+        $adminToken = $admin->createToken('test')->plainTextToken;
+
+        $createRes = $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->postJson('/api/articles', [
+                'title' => 'Artikel Berwaktu Tetap',
+                'content' => 'Konten awal artikel.',
+                'category_id' => $cat->id,
+                'status' => 'published',
+            ]);
+
+        $createRes->assertStatus(201);
+        $articleId = $createRes->json('data.id');
+        $originalPublishedAt = $createRes->json('data.published_at');
+        $this->assertNotNull($originalPublishedAt);
+
+        // Simulasi jeda waktu
+        sleep(1);
+
+        // Update artikel (misalnya ubah judul dan isi artikel)
+        $updateRes = $this->withHeader('Authorization', "Bearer {$adminToken}")
+            ->putJson("/api/articles/{$articleId}", [
+                'title' => 'Artikel Berwaktu Tetap (Updated)',
+                'content' => 'Konten artikel yang telah diperbarui.',
+                'category_id' => $cat->id,
+                'status' => 'published',
+            ]);
+
+        $updateRes->assertStatus(200);
+        $updatedPublishedAt = $updateRes->json('data.published_at');
+
+        // Pastikan timestamp published_at tetap sama persis (tidak berubah)
+        $this->assertEquals($originalPublishedAt, $updatedPublishedAt);
+    }
 }

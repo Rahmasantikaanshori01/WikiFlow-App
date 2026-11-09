@@ -7,6 +7,8 @@ export type Article = {
   tags: string[];
   author: string;
   updated: string;
+  fixedDate?: string;
+  relativeTime?: string;
   read: string;
   views: number;
   status: "Published" | "Draft";
@@ -25,7 +27,8 @@ export const articles: Article[] = [
     tags: ["Development", "Docker"],
     author: "Raka Putra",
     updated: "12 Jun 2025",
-    read: "8 mnt",
+    fixedDate: "12 Jun 2025",
+    read: "8 mnt baca",
     views: 148,
     status: "Published",
     publishedAt: Date.parse("2025-06-12T09:00:00Z"),
@@ -40,7 +43,8 @@ export const articles: Article[] = [
     tags: ["Git", "Scrum"],
     author: "Nadia Aulia",
     updated: "10 Jun 2025",
-    read: "6 mnt",
+    fixedDate: "10 Jun 2025",
+    read: "6 mnt baca",
     views: 264,
     status: "Published",
     publishedAt: Date.parse("2025-06-10T09:00:00Z"),
@@ -55,7 +59,8 @@ export const articles: Article[] = [
     tags: ["API", "Security"],
     author: "Aditya Rama",
     updated: "8 Jun 2025",
-    read: "12 mnt",
+    fixedDate: "8 Jun 2025",
+    read: "12 mnt baca",
     views: 312,
     status: "Published",
     publishedAt: Date.parse("2025-06-08T09:00:00Z"),
@@ -70,7 +75,8 @@ export const articles: Article[] = [
     tags: ["React", "Quality"],
     author: "Sinta Dewi",
     updated: "6 Jun 2025",
-    read: "5 mnt",
+    fixedDate: "6 Jun 2025",
+    read: "5 mnt baca",
     views: 121,
     status: "Published",
     publishedAt: Date.parse("2025-06-06T09:00:00Z"),
@@ -84,7 +90,8 @@ export const articles: Article[] = [
     tags: ["Database", "DevOps"],
     author: "Raka Putra",
     updated: "4 Jun 2025",
-    read: "10 mnt",
+    fixedDate: "4 Jun 2025",
+    read: "10 mnt baca",
     views: 87,
     status: "Draft",
     publishedAt: 0,
@@ -134,3 +141,76 @@ export const tags = [
   "Database",
   "Quality",
 ];
+
+export type SearchFilterOptions = {
+  query?: string;
+  category?: string;
+  tag?: string;
+  includeDrafts?: boolean;
+};
+
+/**
+ * Utilitas pencarian artikel:
+ * - partial match dan case-insensitive pada judul, kategori, dan tag
+ * - filter boleh digabung (contoh: judul mengandung "JWT" + kategori "Backend")
+ * - hanya artikel berstatus published yang muncul (kecuali includeDrafts bernilai true)
+ */
+export function searchArticles(
+  items: Article[],
+  options: SearchFilterOptions = {}
+): Article[] {
+  const { query, category, tag, includeDrafts = false } = options;
+  const qClean = (query || "").trim().toLowerCase();
+  const catClean =
+    category && category !== "Semua kategori"
+      ? category.trim().toLowerCase()
+      : null;
+  const tagClean =
+    tag && tag !== "Semua tag" ? tag.trim().toLowerCase() : null;
+
+  return items.filter((art) => {
+    // Hanya artikel published, kecuali includeDrafts aktif
+    if (!includeDrafts && art.status !== "Published") {
+      return false;
+    }
+
+    // Filter kategori (partial match & case-insensitive)
+    if (catClean) {
+      const artCat = art.category.toLowerCase();
+      if (!artCat.includes(catClean)) {
+        return false;
+      }
+    }
+
+    // Filter tag (partial match & case-insensitive)
+    if (tagClean) {
+      const hasMatchingTag = art.tags.some((t) =>
+        t.toLowerCase().includes(tagClean)
+      );
+      if (!hasMatchingTag) {
+        return false;
+      }
+    }
+
+    // Pencarian kata kunci pada judul, kategori, dan tag
+    if (qClean) {
+      const matchTitle = art.title.toLowerCase().includes(qClean);
+      const matchCategory = art.category.toLowerCase().includes(qClean);
+      const matchTag = art.tags.some((t) => t.toLowerCase().includes(qClean));
+      const matchSummary = art.summary.toLowerCase().includes(qClean);
+      const matchContent = (art.content || "").toLowerCase().includes(qClean);
+
+      if (
+        !matchTitle &&
+        !matchCategory &&
+        !matchTag &&
+        !matchSummary &&
+        !matchContent
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  });
+}

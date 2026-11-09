@@ -30,8 +30,11 @@ import {
 } from "./api";
 import {
   formatArticle,
+  formatRelativeTime,
+  useRelativeTime,
   type FormattedArticle,
 } from "./utils/formatters";
+import { articles as initialArticles, searchArticles } from "./data";
 
 /**
  * Komponen Icon SVG serbaguna untuk navigasi dan elemen UI
@@ -383,7 +386,19 @@ function Search({ close }: { close: () => void }) {
         const list = res.data?.data || [];
         setResults(list.map(formatArticle));
       } catch {
-        setResults([]);
+        const fallback = searchArticles(initialArticles, {
+          query: query.trim(),
+          includeDrafts: false,
+        }).slice(0, 5).map((item) => ({
+          ...item,
+          fixedDate: item.fixedDate || item.updated,
+          relativeTime: formatRelativeTime(item.publishedAt),
+          serverTimestamp: item.publishedAt,
+          categoryId: undefined,
+          tagIds: [],
+          content: item.content || item.summary,
+        } as FormattedArticle));
+        setResults(fallback);
       } finally {
         setLoading(false);
       }
@@ -401,7 +416,7 @@ function Search({ close }: { close: () => void }) {
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Cari artikel, panduan, atau solusi teknis..."
+            placeholder="Cari judul, kategori, atau tag..."
           />
           <kbd>ESC</kbd>
         </div>
@@ -429,7 +444,7 @@ function Search({ close }: { close: () => void }) {
                 <b>{item.title}</b>
                 <p>{item.summary}</p>
                 <em>
-                  {item.category} · {item.updated}
+                  {item.category} · {item.fixedDate || item.updated} ({item.relativeTime})
                 </em>
               </div>
               <Icon name="arrow" />
@@ -530,6 +545,7 @@ function ArticleCard({
   a: FormattedArticle;
   showViews?: boolean;
 }) {
+  const relativeTime = useRelativeTime(a.serverTimestamp || a.publishedAt);
   const authorInitials = a.author
     ? a.author
       .split(" ")
@@ -560,9 +576,15 @@ function ArticleCard({
           <span className="mini-avatar">{authorInitials}</span>
           <b>{a.author}</b>
           <i>•</i>
-          <span>{a.updated}</span>
+          <span title={`Tanggal tetap server: ${a.fixedDate || a.updated}`}>
+            {a.fixedDate || a.updated}
+          </span>
           <i>•</i>
-          <span>{a.read}</span>
+          <span className="time-relative" title="Waktu relatif terkini (diperbarui otomatis)">
+            {relativeTime}
+          </span>
+          <i>•</i>
+          <span>{a.read.endsWith("baca") ? a.read : `${a.read} baca`}</span>
         </footer>
       </div>
       <span className="open-arrow">
@@ -878,7 +900,24 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
         setArticlesList(list);
         setTotalCount(res.data?.total || list.length);
       } catch {
-        if (isMounted) setArticlesList([]);
+        if (!isMounted) return;
+        const filtered = searchArticles(initialArticles, {
+          query,
+          category: selectedCategory !== "Semua kategori" ? selectedCategory : undefined,
+          tag: selectedTag !== "Semua tag" ? selectedTag : undefined,
+          includeDrafts: role === "Admin",
+        });
+        const formattedFallback = filtered.map((item) => ({
+          ...item,
+          fixedDate: item.fixedDate || item.updated,
+          relativeTime: formatRelativeTime(item.publishedAt),
+          serverTimestamp: item.publishedAt,
+          categoryId: undefined,
+          tagIds: [],
+          content: item.content || item.summary,
+        } as FormattedArticle));
+        setArticlesList(formattedFallback);
+        setTotalCount(formattedFallback.length);
       } finally {
         if (isMounted) setLoading(false);
       }
@@ -889,7 +928,7 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
     return () => {
       isMounted = false;
     };
-  }, [query, selectedCategory, selectedTag, sort, page]);
+  }, [query, selectedCategory, selectedTag, sort, page, role]);
 
   return (
     <>
@@ -913,7 +952,7 @@ function ArticlesPage({ role }: { role: "Admin" | "User" }) {
           <input
             value={query}
             onChange={(e) => updateFilters({ q: e.target.value, page: "1" })}
-            placeholder="Cari judul atau isi artikel..."
+            placeholder="Cari judul, kategori, atau tag..."
           />
         </label>
 
@@ -1099,6 +1138,9 @@ function ArticleDetail() {
   const [article, setArticle] = useState<FormattedArticle | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
+  const relativeTime = useRelativeTime(
+    article ? (article.serverTimestamp || article.publishedAt) : null
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -1182,7 +1224,7 @@ function ArticleDetail() {
         <div>
           <b>{article.author}</b>
           <small>
-            Diperbarui {article.updated} · {article.read} baca · {article.views} tayangan
+            Dipublikasikan {article.fixedDate || article.updated} ({relativeTime}) · {article.read.endsWith("baca") ? article.read : `${article.read} baca`} · {article.views} tayangan
           </small>
         </div>
         <div className="doc-tags">
@@ -1713,6 +1755,10 @@ function AdminPage({ type }: { type: string }) {
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
 
+  // Filter pencarian dan status di halaman admin
+  const [adminSearch, setAdminSearch] = useState("");
+  const [adminStatus, setAdminStatus] = useState("Semua status");
+
   // Modal Delete Article
   const [deletingArticle, setDeletingArticle] = useState<FormattedArticle | null>(null);
   const [deleteLoading, setDeleteLoading] = useState(false);
@@ -1735,7 +1781,17 @@ function AdminPage({ type }: { type: string }) {
     Promise.resolve().then(() => setLoading(true));
     try {
       if (type === "articles") {
-        const res = await getArticlesApi({ per_page: 50 });
+        const statusParam =
+          adminStatus === "Published"
+            ? "published"
+            : adminStatus === "Draft"
+              ? "draft"
+              : undefined;
+        const res = await getArticlesApi({
+          search: adminSearch.trim() || undefined,
+          status: statusParam,
+          per_page: 50,
+        });
         setArticles((res.data?.data || []).map(formatArticle));
       } else if (type === "categories") {
         const res = await getCategoriesApi();
@@ -1752,7 +1808,7 @@ function AdminPage({ type }: { type: string }) {
     } finally {
       setLoading(false);
     }
-  }, [type]);
+  }, [type, adminSearch, adminStatus]);
 
   useEffect(() => {
     let isMounted = true;
@@ -1918,13 +1974,22 @@ function AdminPage({ type }: { type: string }) {
         <div className="filters">
           <label>
             <Icon name="search" />
-            <input placeholder={`Cari ${labels[type]?.toLowerCase()}...`} />
+            <input
+              value={adminSearch}
+              onChange={(e) => setAdminSearch(e.target.value)}
+              placeholder={`Cari ${labels[type]?.toLowerCase()}...`}
+            />
           </label>
-          <select>
-            <option>Semua status</option>
-            <option>Published</option>
-            <option>Draft</option>
-          </select>
+          {type === "articles" && (
+            <select
+              value={adminStatus}
+              onChange={(e) => setAdminStatus(e.target.value)}
+            >
+              <option>Semua status</option>
+              <option>Published</option>
+              <option>Draft</option>
+            </select>
+          )}
         </div>
 
         <div className="table">
@@ -1942,7 +2007,10 @@ function AdminPage({ type }: { type: string }) {
                 <span className={`status ${a.status.toLowerCase()}`}>
                   {a.status}
                 </span>
-                <span>{a.updated}</span>
+                <span style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <span>{a.fixedDate || a.updated}</span>
+                  <small style={{ color: "var(--muted)", fontSize: "11px" }}>{a.relativeTime}</small>
+                </span>
                 <div
                   style={{
                     display: "flex",
@@ -2490,7 +2558,7 @@ function Landing() {
                 title: "Panduan Setup Development Environment",
                 summary:
                   "Konfigurasi environment lokal yang konsisten untuk seluruh tim engineering.",
-                read: "8 mnt",
+                read: "8 mnt baca",
                 color: "engineering",
               },
               {
@@ -2498,7 +2566,7 @@ function Landing() {
                 title: "Standar Git Workflow untuk Tim Scrum",
                 summary:
                   "Branching strategy, conventional commits, dan proses pull request yang efektif.",
-                read: "6 mnt",
+                read: "6 mnt baca",
                 color: "workflow",
               },
               {
@@ -2506,7 +2574,7 @@ function Landing() {
                 title: "Integrasi API Authentication dengan JWT",
                 summary:
                   "Implementasi access token dan refresh token yang aman pada aplikasi internal.",
-                read: "12 mnt",
+                read: "12 mnt baca",
                 color: "backend",
               },
             ].map((article) => (
@@ -2521,7 +2589,7 @@ function Landing() {
                 <p>{article.summary}</p>
 
                 <footer>
-                  <span>{article.read} baca</span>
+                  <span>{article.read.endsWith("baca") ? article.read : `${article.read} baca`}</span>
                   <span className="preview-arrow">
                     <Icon name="arrow" />
                   </span>

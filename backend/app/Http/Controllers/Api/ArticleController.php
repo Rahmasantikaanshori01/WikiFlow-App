@@ -29,48 +29,66 @@ class ArticleController extends Controller
         $user = $request->user('sanctum') ?? $request->user();
 
         // Hak akses status artikel: Publik/User biasa hanya melihat yang 'published'
+        // Hanya artikel berstatus published yang muncul di hasil search (kecuali admin melihat draft — opsional)
         if (!$user || $user->role !== 'admin') {
             $query->where('status', 'published');
         } elseif ($request->filled('status')) {
             $query->where('status', $request->input('status'));
         }
 
-        // Pencarian pada judul, ringkasan, atau isi artikel
+        // Pencarian artikel berdasarkan: judul, kategori, dan tag
+        // Pencarian bersifat partial match dan case-insensitive
         if ($request->filled('search')) {
-            $keyword = $request->input('search');
+            $keyword = trim((string) $request->input('search'));
+            if ($keyword !== '') {
+                $keywordLower = mb_strtolower($keyword);
+                $like = "%{$keywordLower}%";
 
-            $query->where(function ($q) use ($keyword) {
-                $q->where('title', 'like', "%{$keyword}%")
-                    ->orWhere('excerpt', 'like', "%{$keyword}%")
-                    ->orWhere('content', 'like', "%{$keyword}%");
-            });
-        }
-
-        // Filter berdasarkan kategori (ID, slug, atau nama)
-        if ($request->filled('category_id')) {
-            $query->where('category_id', $request->integer('category_id'));
-        } elseif ($request->filled('category')) {
-            $cat = $request->input('category');
-            if ($cat !== 'Semua kategori') {
-                $query->whereHas('category', function ($q) use ($cat) {
-                    $q->where('slug', Str::slug($cat))
-                        ->orWhere('name', $cat);
+                $query->where(function ($q) use ($like) {
+                    $q->whereRaw('LOWER(title) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(excerpt) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(content) LIKE ?', [$like])
+                        ->orWhereHas('category', function ($catQ) use ($like) {
+                            $catQ->whereRaw('LOWER(name) LIKE ?', [$like])
+                                ->orWhereRaw('LOWER(slug) LIKE ?', [$like]);
+                        })
+                        ->orWhereHas('tags', function ($tagQ) use ($like) {
+                            $tagQ->whereRaw('LOWER(tags.name) LIKE ?', [$like])
+                                ->orWhereRaw('LOWER(tags.slug) LIKE ?', [$like]);
+                        });
                 });
             }
         }
 
-        // Filter berdasarkan tag (ID, slug, atau nama)
+        // Filter berdasarkan kategori (ID, slug, atau nama - partial match & case-insensitive)
+        if ($request->filled('category_id')) {
+            $query->where('category_id', $request->integer('category_id'));
+        } elseif ($request->filled('category')) {
+            $cat = trim((string) $request->input('category'));
+            if ($cat !== '' && $cat !== 'Semua kategori') {
+                $catLower = mb_strtolower($cat);
+                $query->whereHas('category', function ($q) use ($catLower, $cat) {
+                    $q->whereRaw('LOWER(name) LIKE ?', ["%{$catLower}%"])
+                        ->orWhereRaw('LOWER(slug) LIKE ?', ["%{$catLower}%"])
+                        ->orWhere('slug', Str::slug($cat));
+                });
+            }
+        }
+
+        // Filter berdasarkan tag (ID, slug, atau nama - partial match & case-insensitive)
         if ($request->filled('tag_id')) {
             $tagId = $request->integer('tag_id');
             $query->whereHas('tags', function ($q) use ($tagId) {
                 $q->where('tags.id', $tagId);
             });
         } elseif ($request->filled('tag')) {
-            $tagName = $request->input('tag');
-            if ($tagName !== 'Semua tag') {
-                $query->whereHas('tags', function ($q) use ($tagName) {
-                    $q->where('slug', Str::slug($tagName))
-                        ->orWhere('name', $tagName);
+            $tagName = trim((string) $request->input('tag'));
+            if ($tagName !== '' && $tagName !== 'Semua tag') {
+                $tagLower = mb_strtolower($tagName);
+                $query->whereHas('tags', function ($q) use ($tagLower, $tagName) {
+                    $q->whereRaw('LOWER(tags.name) LIKE ?', ["%{$tagLower}%"])
+                        ->orWhereRaw('LOWER(tags.slug) LIKE ?', ["%{$tagLower}%"])
+                        ->orWhere('tags.slug', Str::slug($tagName));
                 });
             }
         }
