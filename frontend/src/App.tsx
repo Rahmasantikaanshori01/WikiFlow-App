@@ -164,7 +164,13 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
 function Brand() {
   return (
     <button className="brand" onClick={() => go("/")}>
-      <span>W</span>
+      <img
+        src="/logo.jpeg"
+        alt="Logo WikiFlow"
+        className="brand-logo-img"
+        width={32}
+        height={32}
+      />
       <b>WikiFlow</b>
     </button>
   );
@@ -2773,7 +2779,13 @@ function Login({
 
           <form onSubmit={submit} className="login-card">
             <div className="form-logo">
-              <span>W</span>
+              <img
+                src="/logo.jpeg"
+                alt="Logo WikiFlow"
+                className="brand-logo-img form-logo-img"
+                width={40}
+                height={40}
+              />
             </div>
             <h2>Selamat datang kembali</h2>
             <p>Masuk ke workspace WikiFlow.</p>
