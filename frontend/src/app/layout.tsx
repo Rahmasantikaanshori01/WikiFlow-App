@@ -9,7 +9,7 @@ export const metadata: Metadata = {
     description: "Simpan, cari, dan bagikan pengetahuan teknis tim dalam satu tempat.",
   },
   icons: {
-    icon: "/favicon.svg",
+    icon: "/logo.jpeg",
   },
 };
 

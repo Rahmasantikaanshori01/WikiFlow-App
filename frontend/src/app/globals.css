@@ -127,6 +127,28 @@
   box-shadow: 0 0 24px #f47db733;
 }
 
+.brand-logo-img,
+.brand>img {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  object-fit: cover;
+  box-shadow: 0 0 16px rgba(244, 125, 183, 0.25);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: block;
+}
+
+.form-logo-img,
+.form-logo img {
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  object-fit: cover;
+  box-shadow: 0 0 20px rgba(244, 125, 183, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  display: block;
+}
+
 .side-top {
   display: flex;
   justify-content: space-between;
