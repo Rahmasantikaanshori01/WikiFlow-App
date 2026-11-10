@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Article;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -207,31 +208,57 @@ class ArticleController extends Controller
     /**
      * Menampilkan detail artikel berdasarkan slug.
      * Draft hanya dapat diakses oleh admin; publik menerima respon 404.
+     * Menggunakan cache in-memory singkat untuk respon instan tanpa jeda query database.
      */
     public function show(Request $request, string $slug): JsonResponse
     {
-        $query = Article::with([
-            'user:id,name,email',
-            'category:id,name,slug',
-            'tags:id,name,slug',
-        ]);
+        // Hanya cek auth token jika request menyertakan Bearer token untuk menghemat waktu eksekusi
+        $user = $request->bearerToken()
+            ? ($request->user('sanctum') ?? $request->user())
+            : null;
 
-        if (is_numeric($slug)) {
-            $query->where(function ($q) use ($slug) {
-                $q->where('id', (int) $slug)
-                    ->orWhere('slug', $slug);
+        $isAdmin = $user && $user->role === 'admin';
+        $cacheKey = 'article_detail_' . md5($slug);
+
+        if (!$isAdmin) {
+            $article = Cache::remember($cacheKey, 120, function () use ($slug) {
+                $query = Article::with([
+                    'user:id,name,email',
+                    'category:id,name,slug',
+                    'tags:id,name,slug',
+                ]);
+
+                if (is_numeric($slug)) {
+                    $query->where(function ($q) use ($slug) {
+                        $q->where('id', (int) $slug)
+                            ->orWhere('slug', $slug);
+                    });
+                } else {
+                    $query->where('slug', $slug);
+                }
+
+                $query->where('status', 'published');
+
+                return $query->first();
             });
         } else {
-            $query->where('slug', $slug);
+            $query = Article::with([
+                'user:id,name,email',
+                'category:id,name,slug',
+                'tags:id,name,slug',
+            ]);
+
+            if (is_numeric($slug)) {
+                $query->where(function ($q) use ($slug) {
+                    $q->where('id', (int) $slug)
+                        ->orWhere('slug', $slug);
+                });
+            } else {
+                $query->where('slug', $slug);
+            }
+
+            $article = $query->first();
         }
-
-        $user = $request->user('sanctum') ?? $request->user();
-
-        if (!$user || $user->role !== 'admin') {
-            $query->where('status', 'published');
-        }
-
-        $article = $query->first();
 
         if (!$article) {
             return response()->json([
@@ -262,6 +289,9 @@ class ArticleController extends Controller
         }
 
         $article->increment('views');
+
+        // Hapus cache detail artikel agar angka tayangan terbarui
+        Cache::forget('article_detail_' . md5($slug));
 
         return response()->json([
             'message' => 'Tayangan artikel berhasil dicatat.',
@@ -355,6 +385,8 @@ class ArticleController extends Controller
             'tags:id,name,slug',
         ]);
 
+        Cache::forget('article_detail_' . md5($article->slug));
+
         return response()->json([
             'message' => 'Artikel berhasil diperbarui.',
             'data' => $article,
@@ -374,6 +406,8 @@ class ArticleController extends Controller
                 'message' => 'Artikel tidak ditemukan.',
             ], 404);
         }
+
+        Cache::forget('article_detail_' . md5($article->slug));
 
         $article->tags()->detach();
         $article->delete();

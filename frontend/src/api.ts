@@ -268,8 +268,67 @@ export async function deleteTagApi(
 }
 
 // =====================================================
-// ARTIKEL
+// ARTIKEL & CACHE IN-MEMORY
 // =====================================================
+
+/**
+ * Cache in-memory untuk menyimpan detail artikel yang pernah diambil atau ada di daftar.
+ * Menghilangkan waktu tunggu (loading 0ms) saat berpindah ke detail artikel.
+ */
+const articleMemoryCache = new Map<string, { article: ApiArticle; timestamp: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 menit
+
+/**
+ * Simpan artikel ke dalam memory cache
+ */
+export function cacheArticle(article: ApiArticle): void {
+    if (!article || !article.slug) return;
+    articleMemoryCache.set(article.slug, {
+        article,
+        timestamp: Date.now(),
+    });
+}
+
+/**
+ * Simpan banyak artikel sekaligus ke dalam memory cache (misalnya dari daftar artikel)
+ */
+export function cacheArticles(articles: ApiArticle[]): void {
+    if (!Array.isArray(articles)) return;
+    for (const a of articles) {
+        cacheArticle(a);
+    }
+}
+
+/**
+ * Ambil artikel dari memory cache jika tersedia
+ */
+export function getCachedArticle(slug: string): ApiArticle | undefined {
+    const entry = articleMemoryCache.get(slug);
+    if (!entry) return undefined;
+    return entry.article;
+}
+
+/**
+ * Hapus cache artikel tertentu atau seluruh cache (digunakan saat artikel diubah/dihapus)
+ */
+export function invalidateArticleCache(slug?: string): void {
+    if (slug) {
+        articleMemoryCache.delete(slug);
+    } else {
+        articleMemoryCache.clear();
+    }
+}
+
+/**
+ * Prefetch artikel di latar belakang saat hover atau touch agar saat diklik langsung instan
+ */
+export function prefetchArticle(slug: string, token?: string | null): void {
+    if (!slug) return;
+    const cached = getCachedArticle(slug);
+    // Jika sudah ada cache lengkap dengan konten, tidak perlu prefetch ulang
+    if (cached && cached.content) return;
+    getArticleBySlugApi(slug, token).catch(() => {});
+}
 
 export type ArticleQueryParams = {
     search?: string;
@@ -305,11 +364,18 @@ export async function getArticlesApi(
     const queryString = searchParams.toString();
     const endpoint = `/articles${queryString ? `?${queryString}` : ""}`;
 
-    return apiRequest<{ message: string; data: PaginatedData<ApiArticle> }>(
+    const result = await apiRequest<{ message: string; data: PaginatedData<ApiArticle> }>(
         endpoint,
         {},
         token,
     );
+
+    // Otomatis masukkan artikel dari list ke cache agar saat diklik langsung instan
+    if (result?.data?.data) {
+        cacheArticles(result.data.data);
+    }
+
+    return result;
 }
 
 export async function getPopularArticlesApi(
@@ -318,23 +384,47 @@ export async function getPopularArticlesApi(
     message: string;
     data: ApiArticle[];
 }> {
-    return apiRequest<{ message: string; data: ApiArticle[] }>(
+    const result = await apiRequest<{ message: string; data: ApiArticle[] }>(
         `/articles/popular?limit=${limit}`,
     );
+
+    if (result?.data) {
+        cacheArticles(result.data);
+    }
+
+    return result;
 }
 
 export async function getArticleBySlugApi(
     slug: string,
     token?: string | null,
+    skipCache = false,
 ): Promise<{
     message: string;
     data: ApiArticle;
 }> {
-    return apiRequest<{ message: string; data: ApiArticle }>(
+    // Kembalikan dari memory cache terlebih dahulu jika ada konten lengkap
+    if (!skipCache) {
+        const cached = getCachedArticle(slug);
+        if (cached && cached.content) {
+            return {
+                message: "Detail artikel berhasil diambil (cache).",
+                data: cached,
+            };
+        }
+    }
+
+    const result = await apiRequest<{ message: string; data: ApiArticle }>(
         `/articles/${slug}`,
         {},
         token,
     );
+
+    if (result?.data) {
+        cacheArticle(result.data);
+    }
+
+    return result;
 }
 
 export async function recordArticleViewApi(
@@ -363,7 +453,7 @@ export async function createArticleApi(
     message: string;
     data: ApiArticle;
 }> {
-    return apiRequest<{ message: string; data: ApiArticle }>(
+    const result = await apiRequest<{ message: string; data: ApiArticle }>(
         "/articles",
         {
             method: "POST",
@@ -371,6 +461,12 @@ export async function createArticleApi(
         },
         token,
     );
+
+    if (result?.data) {
+        cacheArticle(result.data);
+    }
+
+    return result;
 }
 
 export async function updateArticleApi(
@@ -388,7 +484,7 @@ export async function updateArticleApi(
     message: string;
     data: ApiArticle;
 }> {
-    return apiRequest<{ message: string; data: ApiArticle }>(
+    const result = await apiRequest<{ message: string; data: ApiArticle }>(
         `/articles/${id}`,
         {
             method: "PUT",
@@ -396,6 +492,15 @@ export async function updateArticleApi(
         },
         token,
     );
+
+    if (result?.data) {
+        invalidateArticleCache(result.data.slug);
+        cacheArticle(result.data);
+    } else {
+        invalidateArticleCache();
+    }
+
+    return result;
 }
 
 export async function deleteArticleApi(
@@ -404,11 +509,15 @@ export async function deleteArticleApi(
 ): Promise<{
     message: string;
 }> {
-    return apiRequest<{ message: string }>(
+    const result = await apiRequest<{ message: string }>(
         `/articles/${id}`,
         { method: "DELETE" },
         token,
     );
+
+    invalidateArticleCache();
+
+    return result;
 }
 
 // =====================================================

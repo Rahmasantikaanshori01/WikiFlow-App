@@ -11,6 +11,8 @@ import {
   getPopularArticlesApi,
   getArticleBySlugApi,
   recordArticleViewApi,
+  getCachedArticle,
+  prefetchArticle,
   createArticleApi,
   updateArticleApi,
   deleteArticleApi,
@@ -442,6 +444,8 @@ function Search({ close }: { close: () => void }) {
                 go(`/articles/${item.slug}`);
                 close();
               }}
+              onMouseEnter={() => prefetchArticle(item.slug)}
+              onTouchStart={() => prefetchArticle(item.slug)}
             >
               <span className="result-icon">
                 <Icon name="file" />
@@ -562,7 +566,12 @@ function ArticleCard({
     : "WF";
 
   return (
-    <button className="article-card" onClick={() => go(`/articles/${a.slug}`)}>
+    <button
+      className="article-card"
+      onClick={() => go(`/articles/${a.slug}`)}
+      onMouseEnter={() => prefetchArticle(a.slug)}
+      onTouchStart={() => prefetchArticle(a.slug)}
+    >
       <div className="card-copy">
         <div className="badges">
           <span>{a.category}</span>
@@ -754,7 +763,12 @@ function Dashboard({
               </button>
             </div>
             {popularArticles.map((a, i) => (
-              <button key={a.id} onClick={() => go(`/articles/${a.slug}`)}>
+              <button
+                key={a.id}
+                onClick={() => go(`/articles/${a.slug}`)}
+                onMouseEnter={() => prefetchArticle(a.slug)}
+                onTouchStart={() => prefetchArticle(a.slug)}
+              >
                 <b>0{i + 1}</b>
                 <div>
                   <strong>{a.title}</strong>
@@ -1141,8 +1155,13 @@ function CategoriesPage({ tagsPage = false }: { tagsPage?: boolean }) {
  */
 function ArticleDetail() {
   const slug = location.pathname.split("/").pop() || "";
-  const [article, setArticle] = useState<FormattedArticle | null>(null);
-  const [loading, setLoading] = useState(true);
+
+  // Ambil dari memory cache terlebih dahulu untuk pemuatan instan tanpa jeda (0ms)
+  const cachedApi = getCachedArticle(slug);
+  const initialArticle = cachedApi && cachedApi.content ? formatArticle(cachedApi) : null;
+
+  const [article, setArticle] = useState<FormattedArticle | null>(initialArticle);
+  const [loading, setLoading] = useState(!initialArticle);
   const [notFound, setNotFound] = useState(false);
   const relativeTime = useRelativeTime(
     article ? (article.serverTimestamp || article.publishedAt) : null
@@ -1150,6 +1169,17 @@ function ArticleDetail() {
 
   useEffect(() => {
     let isMounted = true;
+
+    // Sinkronisasi data cache saat berpindah antar artikel
+    const existing = getCachedArticle(slug);
+    if (existing && existing.content) {
+      setArticle(formatArticle(existing));
+      setLoading(false);
+      setNotFound(false);
+    } else {
+      setLoading(true);
+      setNotFound(false);
+    }
 
     async function loadArticle() {
       if (!slug) {
@@ -1160,13 +1190,12 @@ function ArticleDetail() {
         return;
       }
 
-      setLoading(true);
-      setNotFound(false);
       try {
         const res = await getArticleBySlugApi(slug);
         if (!isMounted) return;
         const formatted = formatArticle(res.data);
         setArticle(formatted);
+        setNotFound(false);
 
         // View tracking akurat: Hanya hitung 1 kali per slug per tab session
         const sessionKey = `wf-viewed-${slug}`;
@@ -1181,9 +1210,13 @@ function ArticleDetail() {
           }).catch(() => { });
         }
       } catch {
-        if (isMounted) setNotFound(true);
+        if (isMounted && !existing) {
+          setNotFound(true);
+        }
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     }
 
